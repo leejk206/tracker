@@ -41,7 +41,7 @@ TERMINAL = {   # 태그·이름에 이 단어가 있으면 그 주소에서 멈�
              "bitfinex", "bitget", "mexc", "crypto.com", "upbit", "bithumb", "cex"),
     "믹서": ("tornado", "mixer", "railgun"),
     "브리지": ("bridge", "wormhole", "stargate", "across", "hop protocol", "layerzero", "thorchain", "usdtoft",
-             "usdt0", "oftadapter", "debridge"),
+             "usdt0", "oftadapter", "debridge", "unit:"),   # "Unit: Treasury" = HyperUnit (다시 HL로 들어감)
     "DEX": ("uniswap", "1inch", "cow protocol", "cowswap", "gpv2", "0x:", "paraswap", "sushiswap", "curve",
             "router", "kyberswap", "odos"),
 }

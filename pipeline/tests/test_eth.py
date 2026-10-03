@@ -252,6 +252,14 @@ def test_slow_partial_sweep_is_not_deposit_address():
     assert accounts[SEED].deposit_of == ""
 
 
+def test_sending_to_unit_treasury_stops():
+    """HyperUnit 운영 지갑(Unit: Treasury)으로 보낸 돈은 다시 HL로 들어가는 것이라 따라 들어가지 않는다."""
+    treasury = A(UNIT_TREASURY, tags=["Unit: Treasury"])
+    raws = {SEED: raw(SEED, internal=[unit_in(SEED)], txs=[tx("0x" + "1" * 64, A(SEED), treasury, 150, 60, 200)])}
+    accounts, edges, _ = run(raws, [seed_lead()])
+    assert UNIT_TREASURY not in accounts and edges[0]["result"] == "브리지"
+
+
 def test_hop_limit_leaves_lead():
     raws = {SEED: raw(SEED, internal=[unit_in(SEED)], txs=[tx("0x" + "1" * 64, A(SEED), A(NEXT), 150, 60, 200)])}
     accounts, edges, _ = run(raws, [seed_lead()], hops=0)
