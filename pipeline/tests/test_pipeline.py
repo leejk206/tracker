@@ -122,6 +122,32 @@ def test_hub_stops_tracing():
     assert lead.kind == "허브 도달 (추적 종료)" and lead.token == "XMR1"
 
 
+def test_hub_funded_by_token_deployer_is_service_wallet():
+    """허브에 토큰 발행자가 직접 자금을 넣었으면 그 토큰 서비스의 운영 지갑으로 표시 (사례 2: XMR1 · Wagyu.xyz)."""
+    deployer = "0x207700bd207df757825f9193ef9c648c1c65e06a"
+
+    def hub():
+        raw = recipient_raw()
+        raw["ledger"] += [{"time": 1787900000000 + i, "hash": f"0xin{i}", "delta": {
+            "type": "send", "user": deployer if i == 0 else f"0x{i:040x}", "destination": FIRST_XMR1_RECIPIENT,
+            "token": "XMR1", "amount": "1000", "usdcValue": "400000", "nonce": i}} for i in range(60)]
+        return raw
+
+    def info(body):
+        if body["type"] == "spotMeta":
+            return {"tokens": [{"name": "XMR1", "tokenId": "0xbb20", "fullName": "XMR - Wagyu.xyz"}]}
+        return {"deployer": deployer}
+
+    seeds = core.seeds_from_trace(load(CASE2_TRACE))
+    accounts, _, _ = core.hl_stage(seeds, fetcher({**FIXTURES, FIRST_XMR1_RECIPIENT: hub}), hops=2,
+                                   max_accounts=2, log=lambda _: None, token_info=info)
+    acct = accounts[FIRST_XMR1_RECIPIENT]
+    assert acct.service == ["XMR1 (XMR - Wagyu.xyz)"]
+    assert any("발행자가 자금을 댄" in b for b in acct.basis)
+    (lead,) = acct.leads
+    assert lead.kind.startswith("서비스 지갑 도달")
+
+
 def test_large_account_is_hub_without_full_fetch():
     """hop 1 이상에서 원장 첫 페이지가 꽉 찬 계정은 전체 수집 없이 허브로 멈춘다."""
     def truncated():

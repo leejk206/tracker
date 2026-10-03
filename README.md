@@ -9,7 +9,9 @@ BTC tx나 주소 하나를 넣으면 **UTXO 소비 관계 → HyperUnit 입금 �
 |---|---|
 | `hyperliquid-tracer/` | BTC UTXO BFS + HyperUnit 매칭 → HL 계정 ([README](hyperliquid-tracer/README.md)) |
 | `hl_ledger/` | HL 계정 원장·체결 → 입출금 표 + 1:1 판정 ([README](hl_ledger/README.md)) |
-| `pipeline/` | 위 둘을 잇고 HL 송금 홉 → Ethereum 추적(`eth.py`, Blockscout) → 다음 체인 리드까지 정리 |
+| `pipeline/` | 위 둘을 잇고 HL 송금 홉 → Ethereum 추적(`eth.py`, Blockscout) → 브리지 목적지(`bridges.py`) → 다음 체인 리드까지 정리 |
+
+**사례 3건 결과 요약은 [FINDINGS.md](FINDINGS.md).**
 
 ## 실행 (저장소 루트에서)
 
@@ -29,6 +31,7 @@ python3 -m pipeline ... --eth-hops -1                                           
 | `--max-accounts` | 50 | 조회할 HL 계정 상한. 넘친 송금은 리드로 남음 |
 | `--eth-hops` | 2 | Ethereum 출금 주소에서 따라갈 단계 수 (0이면 출금 주소만, -1이면 ETH 단계 생략) |
 | `--max-eth` | 30 | 조회할 ETH 주소 상한 |
+| `--no-bridges` | - | 브리지 목적지 조회 생략 |
 
 출력 (`--out` 폴더):
 
@@ -68,7 +71,28 @@ Etherscan 호환 `/api`는 키 없이 시간당 10회라 쓰지 않는다.
 | 주소 오염 제외 | 출금 주소마다 앞·뒤 4자리가 닮은 주소의 먼지 입금이 수백 건. 유입에서 빼고 건수만 센다. 그 주소로 실제 송금하면 `오염 피해 의심` 표시 |
 | 이력 전체 수집 | v2 API는 최신순이라 스팸을 다 넘겨야 추적 시점에 닿는다 (엔드포인트당 6,000건 상한) |
 | DEX 스왑은 전환 | ETH를 CoW Swap에 넣고 USDT를 돌려받는 식. 스왑 대금 수령을 추적 자금으로 잇는다 |
+| 스테이킹은 예치 | `EthBatchDepositor` 등에 넣은 ETH는 몇 달 뒤 원금+보상으로 돌아온다. 비콘 출금은 tx 기록에 없어서 이후 유출로 이어 추적 |
+| 되돌아온 자금·환불 | A → B → A, 브리지 주문 취소 환불은 혼입이 아니라 추적 자금으로 센다 |
 | 종착 | Blockscout 태그로 거래소·브리지(USDT0 OFT 포함)·믹서 판정, 그 외 컨트랙트, 이력 상한을 넘는 허브 |
+
+## 브리지 목적지 (`pipeline/bridges.py`)
+
+브리지 입금 리드를 목적 체인 도착 리드로 바꾼다. 공개 API (인증 없음):
+
+| 브리지 | 조회 | 얻는 것 |
+|---|---|---|
+| deBridge (DLN) | `stats-api.dln.trade` tx → orderId → 주문 | 목적 체인, 받는 주소, 도착 금액·토큰, 도착 tx. 취소 주문은 출발 주소 환불로 표시 |
+| LayerZero OFT (USDT0 등) | `scan.layerzero-api.com` tx → 메시지 | 목적 체인, 도착 tx. 받는 주소·금액은 OFT payload 끝 40바이트에서 해석 (Tron은 base58check) |
+
+## 허브 판정 보강
+
+HL 허브가 감지되면 그 허브로 토큰을 보낸 주소가 **토큰 발행자(deployer)**인지 HL `tokenDetails`로 확인한다.
+발행자가 재고를 채워주는 지갑이면 그 토큰 서비스의 운영 지갑으로 표시한다 (사례 2: XMR1 · Wagyu.xyz).
+
+## 보고서 구성
+
+`pipeline.md` 맨 위에 **한눈에 보기**(단계별로 묶은 흐름도: 시작 → BTC 입금 → HL 계정 → ETH 주소 → 도착지별 건수·금액·경로 확실도)가 있고,
+그 아래 계정·주소 단위 상세 흐름도와 표가 이어진다.
 
 ## 실데이터 결과 (2026-10-03)
 
@@ -88,7 +112,7 @@ Etherscan 호환 `/api`는 키 없이 시간당 10회라 쓰지 않는다.
 - Ethereum: 출금 목적지 5개 → ETH 주소 21개 (hop 0·1·2). 출금 주소마다 주소 오염 먼지 271~2,927건을 걸러냄
   - 전형적 경로: 새 주소에서 300~600 ETH씩 쪼개기 → CoW Swap으로 ETH→USDT → **USDT0(OFT) 브리지**로 다른 체인
   - 일부는 ETH 그대로 **deBridge**로 다른 체인
-  - 최종 리드 19건 전부 브리지 입금: USDT0 11건 약 1,086만 USDT, deBridge 8건 약 2,311 ETH + 50만 USDT
+  - 브리지 19건 전부 **Tron** 도착: USDT0 11건 10.9M USDT0, deBridge 7건 5.2M USDT (수취 주소 14개). deBridge 1건은 취소·환불 후 USDT0로 재전송
   - 출금 주소 3개는 BTC 추적 범위 밖 다른 HL 계정의 Unit 출금이 같이 들어와 `추정` (사례 1 전체 79계정 중 BTC 추적이 닿은 건 24개)
 - 소요: BTC 추적 1~10분 (Esplora 공개 API 상태에 따라), HL 수 초, ETH 주소당 수십 초 (`--reuse`면 전체 3초)
 
@@ -108,5 +132,5 @@ python3 -m pytest pipeline/tests -q                                  # 파이프
 - 주소 공통성·그래프 연결은 소유권·불법성의 증명이 아니다. "이 자금이 어디로 갔는가"만 다룬다.
 - BTC 추적은 깊이·fan-in/out 30·tx 500개 제한이 있어 HL 계정의 Unit 입금 전부에 닿지 않을 수 있다 (보고서에 비율 표시).
 - Ethereum은 ETH와 주요 스테이블 4종만 본다. 거래소 판정은 공개 태그 기준이라 태그 없는 거래소 입금 주소는 일반 주소로 한 홉 더 따라간다.
-- Solana·Arbitrum·HyperEVM 출금 이후는 리드로만 남긴다.
+- Tron·Solana·Arbitrum·HyperEVM 도착 이후는 리드로만 남긴다 (브리지는 도착 주소까지 해석).
 - HL은 오래된 체결을 돌려주지 않는다. 대량 거래 계정은 `기록 누락 의심` 표식을 확인할 것.

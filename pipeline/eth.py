@@ -33,7 +33,9 @@ UNIT_SENDERS = {"0xbea9f7fd27f4ee20066f18def0bc586ec221055a", "0x4bbe9b84aac9804
 MATCH_AMOUNT_TOL = Decimal("0.005")
 MATCH_TIME_TOL_MS = 12 * 3600 * 1000
 
-TERMINAL = {   # 태그·이름에 이 단어가 있으면 그 주소에서 멈춘다 (DEX는 멈추지 않고 전환으로 처리)
+TERMINAL = {   # 태그·이름에 이 단어가 있으면 그 주소에서 멈춘다 (DEX·스테이킹은 멈추지 않고 전환·예치로 처리)
+    "스테이킹": ("batchdepositor", "beacon deposit", "eth2 deposit", "depositcontract", "lido", "rocket pool",
+              "stakewise", "kiln", "figment", "staking"),
     "거래소": ("exchange", "binance", "coinbase", "kraken", "okx", "bybit", "kucoin", "htx", "huobi", "gate.io",
              "bitfinex", "bitget", "mexc", "crypto.com", "upbit", "bithumb", "cex"),
     "믹서": ("tornado", "mixer", "railgun"),
@@ -42,6 +44,7 @@ TERMINAL = {   # 태그·이름에 이 단어가 있으면 그 주소에서 멈�
     "DEX": ("uniswap", "1inch", "cow protocol", "cowswap", "gpv2", "0x:", "paraswap", "sushiswap", "curve",
             "router", "kyberswap", "odos"),
 }
+PASS_THROUGH = {"DEX", "스테이킹"}   # 이 종류의 주소는 종착이 아니다 (자금이 형태를 바꿔 돌아온다)
 
 
 @dataclass
@@ -219,8 +222,11 @@ def judge(acct: EthAccount, parent_level: int) -> None:
     sent_to = {}
     for t in acct.outs:
         sent_to.setdefault(t.to, t.block)
-    acct.returned = [t for t in real_in if t not in traced and t not in acct.swaps_in and t.frm in sent_to
-                     and t.block >= sent_to[t.frm]]
+    # 브리지에 넣은 뒤 브리지 쪽에서 들어온 돈은 주문 취소 환불 (deBridge는 넣는 곳과 환불하는 컨트랙트가 다르다)
+    bridged = min((t.block for t in acct.outs if lbls.get(t.to, Label()).kind() == "브리지"), default=None)
+    acct.returned = [t for t in real_in if t not in traced and t not in acct.swaps_in
+                     and ((t.frm in sent_to and t.block >= sent_to[t.frm])
+                          or (bridged is not None and t.block >= bridged and lbls.get(t.frm, Label()).kind() == "브리지"))]
     for t in traced + acct.swaps_in + acct.returned:
         acct.traced_total[t.group] = acct.traced_total.get(t.group, Decimal(0)) + t.amount
     acct.traced_last = max(t.time for t in traced)
@@ -316,7 +322,7 @@ def eth_stage(seeds: dict[str, dict], fetch: Callable[[str], dict], hops: int = 
             acct.basis.insert(0, f"태그: {lbl.text}")
 
         kind = lbl.kind()
-        if kind and kind != "DEX":
+        if kind and kind not in PASS_THROUGH:
             acct.stop = kind
         elif lbl.is_contract:
             acct.stop = "컨트랙트"
@@ -344,6 +350,12 @@ def eth_stage(seeds: dict[str, dict], fetch: Callable[[str], dict], hops: int = 
                 acct.basis.append(f"주의: 주소 오염 먼지를 보낸 주소 `{t.to}`로 {fmt(t.amount)} {t.asset} 송금 — 오염 피해 의심")
             if to_kind == "DEX":
                 edge["result"] = "스왑"
+            elif to_kind == "스테이킹":
+                edge["result"] = "스테이킹 예치"
+                if not any(b.startswith("스테이킹") for b in acct.basis):
+                    acct.basis.append(
+                        "스테이킹 예치 — 회수(비콘 체인 출금)는 일반 tx가 아니라 기록에 안 잡힘. 이후 유출로 이어서 추적"
+                        + (" (이 주소에 비콘 출금 기록 있음)" if (raw.get("info") or {}).get("has_beacon_chain_withdrawals") else ""))
             elif to_kind or to_lbl.is_contract:
                 edge["result"] = to_kind or "컨트랙트"
                 acct.leads.append(Lead("ethereum", t.to, t.tx, t.asset, t.amount, None, t.time, acct.address,
@@ -389,7 +401,7 @@ def rejudge(accounts: dict[str, EthAccount], edges: list[dict], pending: dict[st
     for acct in sorted(accounts.values(), key=lambda a: a.hop):
         seed_level = pending.get(acct.key, {}).get("level", 0) if acct.hop == 0 else 0
         parent_level = max([accounts[p].path_level for p in acct.parents if p in accounts] + [seed_level])
-        stop_lines = [b for b in acct.basis if b.endswith("추적 종료") or b.startswith("주의:")]
+        stop_lines = [b for b in acct.basis if b.endswith("추적 종료") or b.startswith(("주의:", "스테이킹"))]
         acct.basis, acct.traced_total, acct.swaps_in, acct.returned = [], {}, [], []
         judge(acct, parent_level)
         if acct.label.text:

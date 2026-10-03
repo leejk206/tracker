@@ -97,6 +97,7 @@ class Account:
     sends: list[Event] = field(default_factory=list)
     leads: list[Lead] = field(default_factory=list)
     hub: bool = False
+    service: list[str] = field(default_factory=list)   # 허브가 토큰 발행자 운영 지갑이면 그 토큰들
 
     @property
     def key(self) -> str:
@@ -145,9 +146,13 @@ def judge_seed(acct: Account) -> None:
 def judge_hop(acct: Account, accounts: dict[str, Account]) -> None:
     """송금으로 따라온 계정: 추적 자금(부모 계정에서 온 송금) 외 유입이 얼마나 섞였는지로 판정."""
     parent_level = max((accounts[p].path_level for p in acct.parents if p in accounts), default=0)
+    service = (f"토큰 발행자가 자금을 댄 지갑: {', '.join(acct.service)} — 그 토큰 서비스의 운영 지갑으로 보임"
+               if acct.service else "")
     if acct.res["raw"].get("truncated"):
         acct.level = 1
         acct.basis.append(f"원장 {hl_api.HL_PAGE_LIMIT:,}건 이상 대형 계정 — 허브 의심, 전체 수집 생략하고 추적 종료")
+        if service:
+            acct.basis.append(service)
         acct.path_level = min(parent_level, acct.level)
         return
     traced, other = inflow_split(acct.res, acct.parents)
@@ -167,6 +172,8 @@ def judge_hop(acct: Account, accounts: dict[str, Account]) -> None:
     if acct.hub:
         acct.basis.append(f"허브 의심 — 유입 {len(traced) + len(other):,}건 중 추적 자금 비중 1% 미만. "
                           "브리지·거래소·서비스 지갑일 가능성이 커서 여기서 추적 종료")
+        if service:
+            acct.basis.append(service)
     acct.path_level = min(parent_level, acct.level)
 
 
@@ -179,7 +186,9 @@ def collect_leads(acct: Account, followed: set[str], incoming: list[dict]) -> No
         value = sum((e["usdc_value"] or 0 for e in incoming), Decimal(0))
         last = max((e["time"] for e in incoming), default=0)
         acct.leads.append(Lead("hyperliquid", acct.address, "", "/".join(tokens) or "-", amount, value, last,
-                               acct.address, "허브 도달 (추적 종료)", acct.path_level))
+                               acct.address,
+                               f"서비스 지갑 도달 ({', '.join(acct.service)} 발행자 운영)" if acct.service
+                               else "허브 도달 (추적 종료)", acct.path_level))
         return
     for e in acct.res["events"]:
         if e.direction != "out":
@@ -229,10 +238,37 @@ def raw_fetcher(out: Path | None, reuse: bool) -> Callable[..., dict]:
     return fetch
 
 
+def token_issuers(raw: dict, info: Callable[[dict], object]) -> list[str]:
+    """허브로 들어온 토큰 중 그 토큰의 발행자(deployer)가 직접 보낸 것 → ["XMR1 (XMR - Wagyu.xyz)", …].
+
+    발행자가 재고를 채워주는 지갑이면 그 토큰 서비스의 운영 지갑일 가능성이 크다.
+    """
+    me = raw["user"].lower()
+    senders: dict[str, set[str]] = {}
+    for r in raw["ledger"]:
+        d = r["delta"]
+        if d.get("type") in HL_SEND_KINDS and (d.get("destination") or "").lower() == me and d.get("token", "USDC") != "USDC":
+            senders.setdefault(d["token"], set()).add((d.get("user") or "").lower())
+    if not senders:
+        return []
+    meta = {t["name"]: t for t in info({"type": "spotMeta"})["tokens"]}
+    found = []
+    for token, who in sorted(senders.items()):
+        t = meta.get(token)
+        if not t:
+            continue
+        deployer = (info({"type": "tokenDetails", "tokenId": t["tokenId"]}).get("deployer") or "").lower()
+        if deployer and deployer in who:
+            found.append(f"{token} ({t.get('fullName') or token})")
+    return found
+
+
 def hl_stage(seeds: dict[str, dict | None], fetch: Callable[[str], dict], hops: int = 1,
-             max_accounts: int = 50, log=print) -> tuple[dict[str, Account], list[dict], list[tuple[str, str]]]:
+             max_accounts: int = 50, log=print, token_info: Callable[[dict], object] | None = None
+             ) -> tuple[dict[str, Account], list[dict], list[tuple[str, str]]]:
     """seeds(계정 → BTC 매칭 묶음 또는 None)에서 시작해 HL 송금을 hops단계까지 따라간다.
 
+    token_info(HL /info 호출)를 주면 허브에 대해 토큰 발행자 지갑 여부를 확인한다.
     돌려주는 것: 계정들, 송금 간선, 수집 실패 목록.
     """
     accounts: dict[str, Account] = {}
@@ -267,6 +303,13 @@ def hl_stage(seeds: dict[str, dict | None], fetch: Callable[[str], dict], hops: 
         if acct.hub:
             size = f"{len(raw['ledger']):,}건 이상" if raw.get("truncated") else f"{len(raw['ledger']):,}건"
             log(f"  허브 의심 — 추적 종료 (원장 {size})")
+            if token_info:
+                try:
+                    acct.service = token_issuers(raw, token_info)
+                except (hl_api.ApiError, KeyError, TypeError) as e:
+                    log(f"  토큰 발행자 확인 실패: {e}")
+                if acct.service:
+                    log(f"  토큰 발행자가 자금을 댄 서비스 지갑: {', '.join(acct.service)}")
             continue
         acct.sends = [e for e in acct.res["events"] if is_hl_send(e)]
         for e in acct.sends:

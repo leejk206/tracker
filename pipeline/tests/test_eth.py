@@ -176,6 +176,22 @@ def test_late_branch_merge_is_rejudged():
     assert not any("그 외 유입" in b for b in m.basis)
 
 
+def test_staking_deposit_is_not_terminal():
+    """스테이킹 예치 후 (비콘 출금으로 돌아온) 원금+보상을 내보내면 계속 따라간다 — 800 BTC 사례 형태."""
+    depositor = A("0xe00ccc0000000000000000000000000000520130", "EthBatchDepositor", contract=True)
+    info = {**A(SEED), "has_beacon_chain_withdrawals": True}
+    raws = {
+        SEED: raw(SEED, info=info, internal=[unit_in(SEED, amount=1000)],
+                  txs=[tx("0x" + "1" * 64, A(SEED), depositor, 1000, 60, 200),
+                       tx("0x" + "2" * 64, A(SEED), A(NEXT), 1006, 90000, 9000)]),   # 몇 달 뒤 원금+보상
+        NEXT: raw(NEXT, txs=[tx("0x" + "2" * 64, A(SEED), A(NEXT), 1006, 90000, 9000)]),
+    }
+    accounts, edges, _ = run(raws, [seed_lead(amount="1000")], hops=1)
+    assert [e["result"] for e in edges] == ["스테이킹 예치", "추적"]
+    assert not accounts[SEED].leads and NEXT in accounts
+    assert any("비콘 출금 기록 있음" in b for b in accounts[SEED].basis)
+
+
 def test_hop_limit_leaves_lead():
     raws = {SEED: raw(SEED, internal=[unit_in(SEED)], txs=[tx("0x" + "1" * 64, A(SEED), A(NEXT), 150, 60, 200)])}
     accounts, edges, _ = run(raws, [seed_lead()], hops=0)

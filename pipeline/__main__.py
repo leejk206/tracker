@@ -13,7 +13,22 @@ import re
 import sys
 from pathlib import Path
 
-from . import blockscout, core, eth, report
+from . import blockscout, bridges, core, eth, report
+
+
+def cached_get(out: Path, reuse: bool):
+    """브리지 API 응답을 out/bridge/<요청 해시>.json에 저장하고, reuse면 그걸 다시 쓴다."""
+    import hashlib
+
+    def get(url: str) -> dict:
+        path = out / "bridge" / (hashlib.sha1(url.encode()).hexdigest()[:16] + ".json")
+        if reuse and path.is_file():
+            return json.loads(path.read_text(encoding="utf-8"))["data"]
+        data = bridges._get(url)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"url": url, "data": data}, ensure_ascii=False), encoding="utf-8")
+        return data
+    return get
 
 
 def eth_fetcher(out: Path, reuse: bool):
@@ -41,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-accounts", type=int, default=50, help="조회할 HL 계정 상한 (기본 50)")
     p.add_argument("--eth-hops", type=int, default=2, help="Ethereum 출금 이후 따라갈 단계 수 (기본 2, -1이면 ETH 단계 생략)")
     p.add_argument("--max-eth", type=int, default=30, help="조회할 ETH 주소 상한 (기본 30)")
+    p.add_argument("--no-bridges", action="store_true", help="브리지 목적지(deBridge·LayerZero) 조회 생략")
     p.add_argument("--out", type=Path, default=Path("out/pipeline"), help="출력 폴더")
     p.add_argument("--reuse", action="store_true", help="out/hl/<계정>/raw.json이 있으면 HL을 다시 조회하지 않음")
     a = p.parse_args(argv)
@@ -76,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
             core.log_stderr("HyperUnit으로 들어간 HL 계정을 찾지 못함 (깊이를 늘리거나 시작점을 바꿔볼 것)")
 
     accounts, edges, failed = core.hl_stage(seeds, core.raw_fetcher(a.out, a.reuse), a.hl_hops, a.max_accounts,
-                                            log=core.log_stderr)
+                                            log=core.log_stderr, token_info=core.hl_api.hl_info)
     core.write_accounts(accounts, a.out)
 
     eth_accounts, eth_edges, eth_failed = {}, [], []
@@ -86,10 +102,16 @@ def main(argv: list[str] | None = None) -> int:
         eth_accounts, eth_edges, eth_failed = eth.eth_stage(eth_seeds, eth_fetcher(a.out, a.reuse), a.eth_hops,
                                                             a.max_eth, log=core.log_stderr)
 
+    bridge_hops = {}
+    if not a.no_bridges and any(bridges.is_bridge_lead(l) for l in report.final_leads(accounts, eth_accounts)):
+        bridge_hops = bridges.resolve_all(report.final_leads(accounts, eth_accounts), cached_get(a.out, a.reuse),
+                                          log=core.log_stderr)
+
     opts = {"max_depth": a.max_depth, "hl_hops": a.hl_hops, "max_accounts": a.max_accounts,
             "eth_hops": a.eth_hops, "max_eth": a.max_eth}
-    path = report.write(a.out, start, trace, accounts, edges, failed, opts, eth_accounts, eth_edges, eth_failed)
-    leads = report.final_leads(accounts, eth_accounts)
+    path = report.write(a.out, start, trace, accounts, edges, failed, opts, eth_accounts, eth_edges, eth_failed,
+                        bridge_hops)
+    leads = report.final_leads(accounts, eth_accounts, bridge_hops)
     core.log_stderr(f"HL 계정 {len(accounts)}개, ETH 주소 {len(eth_accounts)}개, 다음 체인 리드 {len(leads)}건 → {path}")
     if failed or eth_failed or (trace and trace["errors"]):
         return 2
