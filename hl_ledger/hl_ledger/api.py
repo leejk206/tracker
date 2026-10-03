@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import functools
 import json
 import sys
 import time
@@ -94,6 +95,7 @@ def spot_balances(user: str) -> list[dict]:
     return hl_info({"type": "spotClearinghouseState", "user": user}).get("balances", [])
 
 
+@functools.lru_cache(maxsize=1)
 def spot_pair_names() -> dict[str, str]:
     """'@142' → 'UBTC/USDC' 같은 현물 마켓 이름표."""
     meta = hl_info({"type": "spotMeta"})

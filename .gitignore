@@ -19,3 +19,9 @@ context/
 .idea/
 .DS_Store
 Thumbs.db
+
+# 팀원 작업물 원본 압축 (풀어서 hyperliquid-tracer/로 관리)
+*.zip
+
+# 파이프라인 실행 결과
+/out/
