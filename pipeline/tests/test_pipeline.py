@@ -161,7 +161,7 @@ def test_report_files(tmp_path):
     core.write_accounts(accounts, tmp_path)
     md = report.write(tmp_path, trace["start"], trace, accounts, edges, failed, {"max_depth": 7, "hl_hops": 1, "max_accounts": 2})
     text = md.read_text(encoding="utf-8")
-    assert "```mermaid" in text and "## 5. 다음 체인 리드" in text
+    assert "```mermaid" in text and "## 6. 다음 체인 리드" in text
     with open(tmp_path / "leads.csv", encoding="utf-8-sig") as fh:
         rows = list(csv.DictReader(fh))
     assert len(rows) == 23 and {r["chain"] for r in rows} == {"hyperliquid", "arbitrum"}
