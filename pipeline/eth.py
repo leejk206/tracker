@@ -199,10 +199,11 @@ def judge(acct: EthAccount, parent_level: int) -> None:
     acct.noise_senders = {t.frm for t in noise}
     real_in = [t for t in ins if t not in noise]
     traced = [t for t in real_in if t.tx in acct.traced_txs]
-    if not traced and acct.expect:
-        traced = _match_expected(real_in, acct.expect)
-        if traced:
-            acct.basis.append(f"추적 입금 {len(traced)}건을 금액·시각으로 찾음 (Unit 기록에 ETH tx 없음)")
+    if acct.expect:   # tx 없는 리드는 tx로 찾은 입금과 별개로 금액·시각으로 찾는다
+        extra = _match_expected([t for t in real_in if t not in traced], acct.expect)
+        traced += extra
+        if extra:
+            acct.basis.append(f"추적 입금 {len(extra)}건을 금액·시각으로 찾음 (Unit 기록에 ETH tx 없음)")
 
     if not traced:
         acct.level = acct.path_level = 0

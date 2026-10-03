@@ -13,7 +13,7 @@ import re
 import sys
 from pathlib import Path
 
-from . import blockscout, bridges, core, eth, report
+from . import blockscout, bridges, core, eth, report, tron
 
 
 def cached_get(out: Path, reuse: bool):
@@ -31,17 +31,21 @@ def cached_get(out: Path, reuse: bool):
     return get
 
 
-def eth_fetcher(out: Path, reuse: bool):
-    """ETH 원자료 수집기. 받은 원자료는 out/eth/<주소>/raw.json에 저장하고, reuse면 그걸 다시 쓴다."""
+def cached_fetch(out: Path, chain: str, fetch_address, reuse: bool):
+    """주소별 원자료 수집기. 받은 원자료는 out/<체인>/<주소>/raw.json에 저장하고, reuse면 그걸 다시 쓴다."""
     def fetch(addr: str) -> dict:
-        path = out / "eth" / addr.lower() / "raw.json"
+        path = out / chain / (addr.lower() if addr.startswith("0x") else addr) / "raw.json"
         if reuse and path.is_file():
             return json.loads(path.read_text(encoding="utf-8"))
-        raw = blockscout.fetch_address(addr)
+        raw = fetch_address(addr)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
         return raw
     return fetch
+
+
+def eth_fetcher(out: Path, reuse: bool):
+    return cached_fetch(out, "eth", blockscout.fetch_address, reuse)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -57,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--eth-hops", type=int, default=2, help="Ethereum 출금 이후 따라갈 단계 수 (기본 2, -1이면 ETH 단계 생략)")
     p.add_argument("--max-eth", type=int, default=30, help="조회할 ETH 주소 상한 (기본 30)")
     p.add_argument("--no-bridges", action="store_true", help="브리지 목적지(deBridge·LayerZero) 조회 생략")
+    p.add_argument("--tron-hops", type=int, default=2, help="Tron 도착 주소에서 따라갈 단계 수 (기본 2, -1이면 생략)")
+    p.add_argument("--max-tron", type=int, default=30, help="조회할 Tron 주소 상한 (기본 30)")
     p.add_argument("--out", type=Path, default=Path("out/pipeline"), help="출력 폴더")
     p.add_argument("--reuse", action="store_true", help="out/hl/<계정>/raw.json이 있으면 HL을 다시 조회하지 않음")
     a = p.parse_args(argv)
@@ -67,8 +73,9 @@ def main(argv: list[str] | None = None) -> int:
         p.error("--hl은 0x + 40자리 주소")
     if a.trace and not a.trace.is_file():
         p.error(f"파일 없음: {a.trace}")
-    if a.max_depth < 0 or a.hl_hops < 0 or a.max_accounts < 1 or a.eth_hops < -1 or a.max_eth < 1:
-        p.error("깊이·홉은 0 이상 (--eth-hops는 -1 이상), 계정·주소 상한은 1 이상")
+    if (a.max_depth < 0 or a.hl_hops < 0 or a.max_accounts < 1 or a.eth_hops < -1 or a.max_eth < 1
+            or a.tron_hops < -1 or a.max_tron < 1):
+        p.error("깊이·홉은 0 이상 (--eth-hops·--tron-hops는 -1 이상), 계정·주소 상한은 1 이상")
 
     trace = None
     if a.hl:
@@ -102,18 +109,26 @@ def main(argv: list[str] | None = None) -> int:
         eth_accounts, eth_edges, eth_failed = eth.eth_stage(eth_seeds, eth_fetcher(a.out, a.reuse), a.eth_hops,
                                                             a.max_eth, log=core.log_stderr)
 
-    bridge_hops = {}
-    if not a.no_bridges and any(bridges.is_bridge_lead(l) for l in report.final_leads(accounts, eth_accounts)):
-        bridge_hops = bridges.resolve_all(report.final_leads(accounts, eth_accounts), cached_get(a.out, a.reuse),
-                                          log=core.log_stderr)
+    stages = report.Stages(eth_accounts, eth_edges, eth_failed)
+    if not a.no_bridges and any(bridges.is_bridge_lead(l) for l in report.final_leads(accounts, stages)):
+        stages.bridge_hops = bridges.resolve_all(report.final_leads(accounts, stages), cached_get(a.out, a.reuse),
+                                                 log=core.log_stderr)
+
+    tron_accounts, tron_edges, tron_failed = {}, [], []
+    tron_seeds = tron.seeds_from_leads(report.final_leads(accounts, stages)) if a.tron_hops >= 0 else {}
+    if tron_seeds:
+        core.log_stderr(f"[TRON] 브리지 도착 주소 {len(tron_seeds)}개 추적 (TronScan)")
+        tron_accounts, tron_edges, tron_failed = tron.tron_stage(tron_seeds, cached_fetch(a.out, "tron", tron.fetch_address, a.reuse),
+                                                                 a.tron_hops, a.max_tron, log=core.log_stderr)
 
     opts = {"max_depth": a.max_depth, "hl_hops": a.hl_hops, "max_accounts": a.max_accounts,
-            "eth_hops": a.eth_hops, "max_eth": a.max_eth}
-    path = report.write(a.out, start, trace, accounts, edges, failed, opts, eth_accounts, eth_edges, eth_failed,
-                        bridge_hops)
-    leads = report.final_leads(accounts, eth_accounts, bridge_hops)
-    core.log_stderr(f"HL 계정 {len(accounts)}개, ETH 주소 {len(eth_accounts)}개, 다음 체인 리드 {len(leads)}건 → {path}")
-    if failed or eth_failed or (trace and trace["errors"]):
+            "eth_hops": a.eth_hops, "max_eth": a.max_eth, "tron_hops": a.tron_hops, "max_tron": a.max_tron}
+    stages.tron_accounts, stages.tron_edges, stages.tron_failed = tron_accounts, tron_edges, tron_failed
+    path = report.write(a.out, start, trace, accounts, edges, failed, opts, stages)
+    leads = report.final_leads(accounts, stages)
+    core.log_stderr(f"HL 계정 {len(accounts)}개, ETH 주소 {len(eth_accounts)}개, Tron 주소 {len(tron_accounts)}개, "
+                    f"다음 체인 리드 {len(leads)}건 → {path}")
+    if failed or eth_failed or tron_failed or (trace and trace["errors"]):
         return 2
     return 0 if accounts or not seeds else 1
 

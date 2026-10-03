@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import sys
 import time
@@ -50,7 +51,7 @@ def _get(url: str, retries: int = 5) -> dict:
             if e.code != 429 and e.code < 500:
                 raise ApiError(f"{url}: HTTP {e.code}") from e
             err = f"HTTP {e.code}"
-        except (urllib.error.URLError, TimeoutError) as e:
+        except (urllib.error.URLError, TimeoutError, http.client.HTTPException, OSError, json.JSONDecodeError) as e:
             err = str(getattr(e, "reason", e))
         wait = min(30, 2 ** attempt)
         print(f"  bridge API: {err} — {wait}초 후 재시도", file=sys.stderr)

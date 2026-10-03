@@ -7,6 +7,7 @@ v2 주소 API는 최신순·페이지당 50건이고 주소 오염 스팸이 수
 """
 from __future__ import annotations
 
+import http.client
 import json
 import sys
 import time
@@ -54,7 +55,7 @@ def get(path: str, params: dict | None = None, retries: int = 6) -> dict:
                 wait = int(reset) / 1000 + 0.5
                 if wait > MAX_RESET_WAIT:
                     raise ApiError(f"{path}: 요청 한도 초과, {wait / 60:.0f}분 뒤 재설정") from e
-        except (urllib.error.URLError, TimeoutError) as e:
+        except (urllib.error.URLError, TimeoutError, http.client.HTTPException, OSError, json.JSONDecodeError) as e:
             err = str(getattr(e, "reason", e))
         print(f"  blockscout {path}: {err} — {wait:.1f}초 후 재시도", file=sys.stderr)
         time.sleep(wait)

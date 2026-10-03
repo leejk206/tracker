@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import functools
+import http.client
 import json
 import sys
 import time
@@ -44,7 +45,7 @@ def _request(url: str, body: dict | None = None, retries: int = 8) -> object:
                 retry_after = e.headers.get("Retry-After")
                 wait = int(retry_after) if retry_after and retry_after.isdigit() else max(wait, 10)
             err = f"HTTP {e.code}"
-        except (urllib.error.URLError, TimeoutError) as e:
+        except (urllib.error.URLError, TimeoutError, http.client.HTTPException, OSError) as e:
             err = str(getattr(e, "reason", e))
         if attempt == retries - 1:
             break

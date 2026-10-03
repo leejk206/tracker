@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import json
 from collections import Counter, defaultdict
+from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 
@@ -35,6 +36,18 @@ MERMAID_MAX_ETH = 20
 ETH_TX = "https://etherscan.io/tx/{}"
 
 
+@dataclass
+class Stages:
+    """HL 이후 단계 결과 묶음: Ethereum 추적 · 브리지 해석 · Tron 추적."""
+    eth_accounts: dict = field(default_factory=dict)
+    eth_edges: list = field(default_factory=list)
+    eth_failed: list = field(default_factory=list)
+    bridge_hops: dict = field(default_factory=dict)
+    tron_accounts: dict = field(default_factory=dict)
+    tron_edges: list = field(default_factory=list)
+    tron_failed: list = field(default_factory=list)
+
+
 def _usd(x) -> str:
     return "-" if x is None else fmt(x, 2)
 
@@ -55,16 +68,19 @@ def all_leads(accounts: dict[str, Account]) -> list[Lead]:
     return sorted((l for a in accounts.values() for l in a.leads), key=lambda l: l.time)
 
 
-def final_leads(accounts: dict[str, Account], eth_accounts: dict | None = None,
-                bridge_hops: dict[str, list[BridgeHop]] | None = None) -> list[Lead]:
-    """최종 리드: HL 리드 중 ETH 단계가 이어받은 출금은 빼고, ETH 단계의 종착·미추적 리드를 더한다.
-    브리지 입금은 해석됐으면 목적 체인 도착 리드로 바꾼다."""
-    eth_accounts = eth_accounts or {}
+def final_leads(accounts: dict[str, Account], st: Stages | None = None) -> list[Lead]:
+    """최종 리드: 다음 단계가 이어받은 리드는 빼고 그 단계의 종착·미추적 리드로 바꾼다.
+    HL → (ETH 추적) → 브리지 도착 리드 → (Tron 추적)."""
+    st = st or Stages()
+    eth_accounts, tron_accounts = st.eth_accounts, st.tron_accounts
     hl = [l for l in all_leads(accounts) if not (l.chain == "ethereum" and l.address.lower() in eth_accounts)]
     eth_leads = [l for a in eth_accounts.values() for l in a.leads]
-    arrived = arrival_leads(sorted(hl + eth_leads, key=lambda l: l.time), bridge_hops or {})
+    arrived = arrival_leads(sorted(hl + eth_leads, key=lambda l: l.time), st.bridge_hops)
     # 취소 환불이 이미 추적한 ETH 주소로 돌아왔으면 그 주소의 유출로 이미 이어졌다
-    return [l for l in arrived if not (l.chain == "ethereum" and "환불" in l.kind and l.address.lower() in eth_accounts)]
+    arrived = [l for l in arrived if not (l.chain == "ethereum" and "환불" in l.kind and l.address.lower() in eth_accounts)]
+    arrived = [l for l in arrived if not (l.chain == "tron" and l.address in tron_accounts)]
+    tron_leads = [l for a in tron_accounts.values() for l in a.leads]
+    return sorted(arrived + tron_leads, key=lambda l: l.time)
 
 
 def _abbr(x: Decimal) -> str:
@@ -82,10 +98,11 @@ def _amounts(leads: list[Lead]) -> str:
     return " + ".join(f"{_abbr(v)} {t}" for t, v in sorted(by.items(), key=lambda kv: -kv[1]) if v)
 
 
-def overview(start: str, trace: dict | None, accounts: dict[str, Account], eth_accounts: dict,
+def overview(start: str, trace: dict | None, accounts: dict[str, Account], st: Stages,
              leads: list[Lead]) -> str:
     """단계별로 묶은 흐름도: 시작 → BTC 입금 → HL 계정 → (HL 송금 계정 · 허브) → ETH 주소 → 종착 묶음."""
     import re
+    eth_accounts, tron_accounts = st.eth_accounts, st.tron_accounts
     lines = ["```mermaid", "flowchart LR", f'  S["시작<br>{short(start)}"]']
     prev = "S"
     if trace and trace["matches"]:
@@ -119,11 +136,17 @@ def overview(start: str, trace: dict | None, accounts: dict[str, Account], eth_a
         hl_parents = {p for a in eth_accounts.values() if a.hop == 0 for p in a.parents}
         for g in sorted({group_of(p) for p in hl_parents} or {"H0"}):
             lines.append(f"  {g} -->|Unit 출금| E")
+    if tron_accounts:
+        depth = max(a.hop for a in tron_accounts.values())
+        arrived = [h for hs in st.bridge_hops.values() for h in hs if h.dst_chain == "tron"]
+        usdt = sum((h.amount or 0 for h in arrived), Decimal(0))
+        lines.append(f'  TR["Tron 주소 {len(tron_accounts)}개<br>hop 0~{depth}"]')
+        lines.append(f"  {'E' if eth_accounts else 'H0'} -->|브리지 {len(arrived)}건 · {_abbr(usdt)} USDT| TR")
     groups: dict[tuple[str, str, str], list[Lead]] = defaultdict(list)
     for l in leads:
-        if l.kind.startswith(("허브 도달", "서비스 지갑 도달")):
-            continue   # 허브 노드로 이미 그림
-        src = "E" if l.source.lower() in eth_accounts else group_of(l.source)
+        if l.chain == "hyperliquid" and l.kind.startswith(("허브 도달", "서비스 지갑 도달")):
+            continue   # HL 허브 노드로 이미 그림
+        src = ("TR" if l.source in tron_accounts else "E" if l.source.lower() in eth_accounts else group_of(l.source))
         kind = re.sub(r"\s*\([^)]*\)", "", l.kind)
         if kind == "거래소 입금":   # 거래소 이름은 남긴다: "거래소 입금 (Binance: Hot Wallet · …)" → Binance
             kind += " " + l.kind.split("(", 1)[-1].split(":")[0].split("·")[0].strip(" )")
@@ -199,11 +222,11 @@ def mermaid(start: str, accounts: dict[str, Account], eth_accounts: dict | None 
 
 
 def render(start: str, trace: dict | None, accounts: dict[str, Account], edges: list[dict],
-           failed: list[tuple[str, str]], opts: dict, eth_accounts: dict | None = None,
-           eth_edges: list[dict] | None = None, eth_failed: list[tuple[str, str]] | None = None,
-           bridge_hops: dict[str, list[BridgeHop]] | None = None) -> str:
-    eth_accounts, eth_edges, eth_failed, bridge_hops = eth_accounts or {}, eth_edges or [], eth_failed or [], bridge_hops or {}
-    leads = final_leads(accounts, eth_accounts, bridge_hops)
+           failed: list[tuple[str, str]], opts: dict, st: Stages | None = None) -> str:
+    st = st or Stages()
+    eth_accounts, eth_edges, eth_failed, bridge_hops = st.eth_accounts, st.eth_edges, st.eth_failed, st.bridge_hops
+    tron_accounts, tron_edges, tron_failed = st.tron_accounts, st.tron_edges, st.tron_failed
+    leads = final_leads(accounts, st)
     hop_count = Counter(a.hop for a in accounts.values())
     by_chain = Counter(l.chain for l in leads)
     parts = [f"# 자금 흐름 추적 — `{start}`", ""]
@@ -231,10 +254,18 @@ def render(start: str, trace: dict | None, accounts: dict[str, Account], edges: 
         dst = Counter(h.dst_chain for h in arrived)
         summary.append(f"브리지 {len(bridge_hops)}건 해석 → " + ", ".join(f"{c} {n}건" for c, n in dst.most_common())
                        + (f" (해석 실패 {sum(1 for v in bridge_hops.values() if not v)}건)" if any(not v for v in bridge_hops.values()) else ""))
+    if tron_accounts:
+        tron_hops = Counter(a.hop for a in tron_accounts.values())
+        stops = Counter(a.stop for a in tron_accounts.values() if a.stop)
+        summary.append("Tron 주소: " + ", ".join(f"hop {h} {n}개" for h, n in sorted(tron_hops.items()))
+                       + f" (추적 {opts.get('tron_hops')}홉, 상한 {opts.get('max_tron')}개)"
+                       + (" · 종착 " + ", ".join(f"{k} {n}개" for k, n in stops.items()) if stops else ""))
+    if tron_failed:
+        summary.append(f"수집 실패 Tron 주소 {len(tron_failed)}개 — 결과는 부분 조회")
     summary.append("다음 체인 리드: " + (", ".join(f"{c} {n}건" for c, n in by_chain.most_common()) or "없음"))
     if failed:
         summary.append(f"수집 실패 HL 계정 {len(failed)}개 — 결과는 부분 조회")
-    parts += [f"- {s}" for s in summary] + ["", "### 한눈에 보기", "", overview(start, trace, accounts, eth_accounts, leads), "",
+    parts += [f"- {s}" for s in summary] + ["", "### 한눈에 보기", "", overview(start, trace, accounts, st, leads), "",
                                              "### 상세 흐름도", "", mermaid(start, accounts, eth_accounts, bridge_hops), ""]
 
     parts += ["## 1. 단계별 연결", "",
@@ -250,6 +281,8 @@ def render(start: str, trace: dict | None, accounts: dict[str, Account], edges: 
                    "추적 자금 외 유입·이전 잔액 비율 (1% 기준). 주소 오염·가짜 토큰 제외, DEX 스왑은 전환으로 이음"],
                   ["Ethereum → 다른 체인 (브리지)", "deBridge 주문 API · LayerZero scan", "출발 tx → 주문/메시지 → 도착 tx",
                    "브리지 기록상 받는 주소·도착 금액 (출발 구간 확실도를 그대로 씀)"],
+                  ["Tron 주소 → 주소", "TronScan TRC-20 전송 (USDT)", "tx id",
+                   "추적 자금 외 유입·이전 잔액 비율 (1% 기준). 전송 2,000건 넘는 주소는 허브로 보고 종료"],
               ]), "",
               "경로 확실도 = 시작점부터 그 지점까지 구간 확실도 중 가장 낮은 것. "
               "`확정` > `계정 단위 확정` (계정 안에서 합쳐져 건별 매핑은 추정) > `추정` > `미확인`.", ""]
@@ -298,11 +331,33 @@ def render(start: str, trace: dict | None, accounts: dict[str, Account], edges: 
         if any(n > 1 for n in recv.values()):
             parts += ["받는 주소별: " + ", ".join(f"{c} `{short(r)}` {n}건" for (c, r), n in recv.most_common() if n > 1), ""]
 
+    if tron_accounts:
+        rows = [[a.hop, _addr("tron", a.address), a.tag or "-", LEVEL_NAME[a.level], LEVEL_NAME[a.path_level],
+                 "<br>".join(a.basis)] for a in sorted(tron_accounts.values(), key=lambda a: (a.hop, a.address))]
+        parts += ["### Tron 추적", "", table(["hop", "주소", "태그", "주소 구간", "경로", "근거"], rows), ""]
+        if tron_edges:
+            rows = [[ts(e["time"]), _addr("tron", e["from"]), _addr("tron", e["to"]) + (f" {e['label']}" if e["label"] else ""),
+                     f"{fmt(e['amount'])} {e['asset']}", e.get("result", "-"), _tx("tron", e["tx"])] for e in tron_edges]
+            parts += ["#### Tron 송금", "", table(["시각 (UTC)", "보낸 주소", "받은 주소", "수량", "처리", "tx"], rows), ""]
+        # 여러 추적 주소가 보낸 곳 = 자금이 모이는 곳 (보낸 주소 수 순)
+        senders: dict[str, set[str]] = defaultdict(set)
+        got: dict[str, Decimal] = defaultdict(Decimal)
+        for e in tron_edges:
+            senders[e["to"]].add(e["from"])
+            got[e["to"]] += e["amount"]
+        top = sorted((a for a in senders if len(senders[a]) > 1), key=lambda a: (-len(senders[a]), -got[a]))[:8]
+        if top:
+            rows = [[_addr("tron", a), len(senders[a]), f"{fmt(got[a], 2)} USDT",
+                     (tron_accounts[a].stop or "추적") if a in tron_accounts else "리드"] for a in top]
+            parts += ["#### 모이는 곳 (추적 주소 2개 이상이 보낸 Tron 주소)", "",
+                      table(["주소", "보낸 추적 주소 수", "받은 합계", "처리"], rows), ""]
+
+    def src_chain(addr: str) -> str:
+        return "tron" if addr in tron_accounts else "ethereum" if addr.lower() in eth_accounts else "hyperliquid"
+
     if leads:
         rows = [[ts(l.time), l.kind, l.chain, _addr(l.chain, l.address), f"{fmt(l.amount)} {l.token}", _usd(l.usdc_value),
-                 _tx(l.chain, l.tx),
-                 _addr("ethereum" if l.source.lower() in eth_accounts else "hyperliquid", l.source),
-                 LEVEL_NAME[l.level]] for l in leads]
+                 _tx(l.chain, l.tx), _addr(src_chain(l.source), l.source), LEVEL_NAME[l.level]] for l in leads]
         parts += ["## 6. 다음 체인 리드", "", "파이프라인이 더 따라가지 않은 목적지. `leads.csv`를 다음 체인 추적 입력으로 쓴다.", "",
                   table(["시각 (UTC)", "종류", "체인", "목적지 주소", "수량", "USDC 가치", "tx", "출처 계정", "경로 확실도"], rows), ""]
 
@@ -316,8 +371,13 @@ def render(start: str, trace: dict | None, accounts: dict[str, Account], edges: 
                      "거래소·브리지·믹서 판정은 Blockscout 공개 태그 기준이며, 태그 없는 입금 주소는 일반 주소로 따라간다.")
     for addr, err in failed:
         notes.append(f"HL 수집 실패 `{addr}` — {err}")
+    if tron_accounts:
+        notes.append("Tron은 USDT(TRC-20)만 본다. TronScan은 키 없이 주소 태그를 거의 주지 않아 거래소 판별이 어렵고, "
+                     "전송이 많은 주소는 허브로 보고 멈춘다.")
     for addr, err in eth_failed:
         notes.append(f"ETH 수집 실패 `{addr}` — {err}")
+    for addr, err in tron_failed:
+        notes.append(f"Tron 수집 실패 `{addr}` — {err}")
     parts += ["## 7. 주의", ""] + [f"- {n}" for n in notes] + [""]
     return "\n".join(parts)
 
@@ -329,17 +389,16 @@ def lead_dict(l: Lead) -> dict:
 
 
 def write(out: Path, start: str, trace: dict | None, accounts: dict[str, Account], edges: list[dict],
-          failed: list[tuple[str, str]], opts: dict, eth_accounts: dict | None = None,
-          eth_edges: list[dict] | None = None, eth_failed: list[tuple[str, str]] | None = None,
-          bridge_hops: dict[str, list[BridgeHop]] | None = None) -> Path:
-    eth_accounts, eth_edges, eth_failed, bridge_hops = eth_accounts or {}, eth_edges or [], eth_failed or [], bridge_hops or {}
+          failed: list[tuple[str, str]], opts: dict, st: Stages | None = None) -> Path:
+    st = st or Stages()
+    eth_accounts, eth_edges, bridge_hops = st.eth_accounts, st.eth_edges, st.bridge_hops
     out.mkdir(parents=True, exist_ok=True)
     if trace:
         (out / "btc").mkdir(exist_ok=True)
         (out / "btc" / "trace.json").write_text(json.dumps(trace, indent=1, ensure_ascii=False), encoding="utf-8")
-    (out / "pipeline.md").write_text(render(start, trace, accounts, edges, failed, opts, eth_accounts, eth_edges, eth_failed, bridge_hops),
+    (out / "pipeline.md").write_text(render(start, trace, accounts, edges, failed, opts, st),
                                        encoding="utf-8")
-    leads = [lead_dict(l) for l in final_leads(accounts, eth_accounts, bridge_hops)]
+    leads = [lead_dict(l) for l in final_leads(accounts, st)]
     with open(out / "leads.csv", "w", newline="", encoding="utf-8-sig") as fh:
         w = csv.DictWriter(fh, fieldnames=list(lead_dict(Lead("", "", "", "", Decimal(0), None, 0, "", "")).keys()))
         w.writeheader()
@@ -359,8 +418,12 @@ def write(out: Path, start: str, trace: dict | None, accounts: dict[str, Account
         "eth_edges": [{**e, "amount": str(e["amount"])} for e in eth_edges],
         "bridges": [{**h.__dict__, "amount": None if h.amount is None else str(h.amount)}
                     for hs in bridge_hops.values() for h in hs],
+        "tron_accounts": [{"address": a.address, "hop": a.hop, "parents": sorted(a.parents), "tag": a.tag,
+                           "account_level": LEVEL_NAME[a.level], "path_level": LEVEL_NAME[a.path_level],
+                           "stop": a.stop, "basis": a.basis} for a in st.tron_accounts.values()],
+        "tron_edges": [{**e, "amount": str(e["amount"])} for e in st.tron_edges],
         "leads": leads,
-        "failed": [{"address": a, "error": e} for a, e in failed + eth_failed],
+        "failed": [{"address": a, "error": e} for a, e in failed + st.eth_failed + st.tron_failed],
     }
     (out / "pipeline.json").write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
     return out / "pipeline.md"
