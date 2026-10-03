@@ -50,9 +50,16 @@ def tok(h, frm, to, contract, amount, decimals, minute, block, li=0, symbol="USD
             "total": {"value": str(int(Decimal(str(amount)) * 10 ** decimals)), "decimals": str(decimals)}}
 
 
-def raw(address, txs=(), internal=(), tokens=(), info=None, truncated=False, balance=0):
+def raw(address, txs=(), internal=(), tokens=(), info=None, truncated=False, balance=0, withdrawals=()):
     return {"address": address, "fetchedAt": 0, "info": {**(info or A(address)), "coin_balance": str(balance)},
-            "txs": list(txs), "internal": list(internal), "tokens": list(tokens), "truncated": truncated}
+            "txs": list(txs), "internal": list(internal), "tokens": list(tokens), "truncated": truncated,
+            "withdrawals": list(withdrawals)}
+
+
+def wd(index, to, eth_amt, minute, block):
+    """비콘 체인 출금 (Blockscout /addresses/{a}/withdrawals 형식)."""
+    return {"index": index, "amount": str(int(Decimal(str(eth_amt)) * 10 ** 18)), "block_number": block,
+            "timestamp": iso(minute), "receiver": A(to), "validator_index": index}
 
 
 def unit_in(to, amount=158.66, minute=0, block=100, h=SEED_TX):
@@ -120,6 +127,25 @@ def test_dex_swap_is_followed_into_bridge():
     assert lead.kind.startswith("브리지 입금") and lead.token == "USDT"
 
 
+def test_stable_to_stable_swap_is_not_double_counted():
+    """USDC → USDT 스왑이면 내보낸 USDC와 받은 USDT가 둘 다 더해지지 않게 순액으로 표시한다."""
+    usdc = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    settle = A(COW_SETTLEMENT, "GPv2Settlement", ["CoW Protocol: GPv2Settlement"], contract=True)
+    oft = A(USDT0_OFT, "UsdtOFT", contract=True)
+    raws = {SEED: raw(SEED, internal=[unit_in(SEED)],
+                      tokens=[tok("0x" + "e" * 64, A(UNIT_TREASURY), A(SEED), usdc, 1000000, 6, 5, 105, symbol="USDC"),
+                              tok("0x" + "d" * 64, A(SEED), settle, usdc, 1000000, 6, 10, 110, symbol="USDC"),
+                              tok("0x" + "f" * 64, settle, A(SEED), USDT, 999000, 6, 20, 120),
+                              tok("0x" + "9" * 64, A(SEED), oft, USDT, 999000, 6, 30, 130)])}
+    # USDC 입금도 추적 입금으로 지정 (Unit 출금 tx 둘)
+    lead2 = seed_lead(tx_hash="0x" + "e" * 64, amount="1000000")
+    accounts, _, _ = run(raws, [seed_lead(), lead2])
+    acct = accounts[SEED]
+    assert acct.traced_total["USD"] == Decimal(1999000)           # 총액은 둘 다 (혼입 비율 기준)
+    assert acct.traced_net["USD"] == Decimal(999000)              # 순액은 스왑 결과만
+    assert any("999,000 USD" in b and "순액" in b for b in acct.basis)
+
+
 def test_follow_next_hop_and_poisoning_victim_warning():
     spam = [itx("0x" + f"{9:064x}", A(POISON), A(SEED), "0.00000001", 5, 105)]
     raws = {
@@ -183,13 +209,47 @@ def test_staking_deposit_is_not_terminal():
     raws = {
         SEED: raw(SEED, info=info, internal=[unit_in(SEED, amount=1000)],
                   txs=[tx("0x" + "1" * 64, A(SEED), depositor, 1000, 60, 200),
-                       tx("0x" + "2" * 64, A(SEED), A(NEXT), 1006, 90000, 9000)]),   # 몇 달 뒤 원금+보상
+                       tx("0x" + "2" * 64, A(SEED), A(NEXT), 1006, 90000, 9000)],   # 몇 달 뒤 원금+보상
+                  withdrawals=[wd(1, SEED, 503, 80000, 8000), wd(2, SEED, 503, 80010, 8001)]),
         NEXT: raw(NEXT, txs=[tx("0x" + "2" * 64, A(SEED), A(NEXT), 1006, 90000, 9000)]),
     }
     accounts, edges, _ = run(raws, [seed_lead(amount="1000")], hops=1)
     assert [e["result"] for e in edges] == ["스테이킹 예치", "추적"]
     assert not accounts[SEED].leads and NEXT in accounts
-    assert any("비콘 출금 기록 있음" in b for b in accounts[SEED].basis)
+    acct = accounts[SEED]
+    assert len(acct.staking_in) == 2 and eth.LEVEL_NAME[acct.level] == "계정 단위 확정"   # 회수는 혼입이 아님
+    assert any("비콘 출금 2건 1,006 ETH 회수" in b and "예치 대비 6 ETH" in b for b in acct.basis)
+
+
+def test_beacon_withdrawals_without_staking_are_outside_money():
+    """스테이킹 예치 없이 비콘 출금이 들어오면 원래 있던 다른 자금이다."""
+    raws = {SEED: raw(SEED, internal=[unit_in(SEED, amount=1000)], withdrawals=[wd(1, SEED, 500, 30, 150)],
+                      txs=[tx("0x" + "1" * 64, A(SEED), A(BINANCE, tags=["Binance 14"]), 1500, 60, 200)])}
+    accounts, _, _ = run(raws, [seed_lead(amount="1000")])
+    assert eth.LEVEL_NAME[accounts[SEED].level] == "추정"
+
+
+def test_untagged_exchange_deposit_address():
+    """태그 없는 주소가 받은 돈을 곧바로 거래소 핫월렛으로 쓸어 보내면 그 거래소 입금 주소로 표시."""
+    hot = A(BINANCE, tags=["Binance: Hot Wallet", "Binance 14"])
+    raws = {
+        SEED: raw(SEED, internal=[unit_in(SEED)], txs=[tx("0x" + "1" * 64, A(SEED), A(NEXT), 158, 60, 200)]),
+        NEXT: raw(NEXT, txs=[tx("0x" + "1" * 64, A(SEED), A(NEXT), 158, 60, 200),
+                             tx("0x" + "2" * 64, A(NEXT), hot, 157.99, 90, 210)]),
+    }
+    accounts, _, _ = run(raws, [seed_lead()], hops=1)
+    assert accounts[NEXT].deposit_of == "Binance" and accounts[SEED].deposit_of == ""
+    assert any("Binance 입금 주소로 보임" in b for b in accounts[NEXT].basis)
+
+
+def test_slow_partial_sweep_is_not_deposit_address():
+    """일부만, 혹은 한참 뒤에 거래소로 보내면 입금 주소로 보지 않는다."""
+    hot = A(BINANCE, tags=["Binance: Hot Wallet"])
+    raws = {SEED: raw(SEED, internal=[unit_in(SEED)], txs=[
+        tx("0x" + "1" * 64, A(SEED), hot, 50, 60, 200),                 # 3분의 1만
+        tx("0x" + "2" * 64, A(SEED), A(NEXT), 108, 60 * 24 * 10, 900)])}  # 나머지는 열흘 뒤 다른 곳
+    accounts, _, _ = run(raws, [seed_lead()], hops=0)
+    assert accounts[SEED].deposit_of == ""
 
 
 def test_hop_limit_leaves_lead():

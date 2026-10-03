@@ -32,6 +32,8 @@ python3 -m pipeline ... --eth-hops -1                                           
 | `--eth-hops` | 2 | Ethereum 출금 주소에서 따라갈 단계 수 (0이면 출금 주소만, -1이면 ETH 단계 생략) |
 | `--max-eth` | 30 | 조회할 ETH 주소 상한 |
 | `--no-bridges` | - | 브리지 목적지 조회 생략 |
+| `--tron-hops` | 2 | Tron 도착 주소에서 따라갈 단계 수 (-1이면 Tron 단계 생략) |
+| `--max-tron` | 30 | 조회할 Tron 주소 상한 |
 
 출력 (`--out` 폴더):
 
@@ -71,7 +73,8 @@ Etherscan 호환 `/api`는 키 없이 시간당 10회라 쓰지 않는다.
 | 주소 오염 제외 | 출금 주소마다 앞·뒤 4자리가 닮은 주소의 먼지 입금이 수백 건. 유입에서 빼고 건수만 센다. 그 주소로 실제 송금하면 `오염 피해 의심` 표시 |
 | 이력 전체 수집 | v2 API는 최신순이라 스팸을 다 넘겨야 추적 시점에 닿는다 (엔드포인트당 6,000건 상한) |
 | DEX 스왑은 전환 | ETH를 CoW Swap에 넣고 USDT를 돌려받는 식. 스왑 대금 수령을 추적 자금으로 잇는다 |
-| 스테이킹은 예치 | `EthBatchDepositor` 등에 넣은 ETH는 몇 달 뒤 원금+보상으로 돌아온다. 비콘 출금은 tx 기록에 없어서 이후 유출로 이어 추적 |
+| 스테이킹은 예치 | `EthBatchDepositor` 등에 넣은 ETH는 몇 달 뒤 원금+보상으로 돌아온다. 비콘 체인 출금 기록(`/withdrawals`, 최근 500건)을 받아 회수액을 추적 자금으로 센다. 조회가 실패하면 이후 유출로 이어 추적 |
+| 태그 없는 거래소 입금 주소 | 이전 잔액 없이 받은 추적 자금의 95% 이상을 72시간 안에 거래소 핫월렛으로 보낸 주소는 그 거래소 입금 주소로 표시 |
 | 되돌아온 자금·환불 | A → B → A, 브리지 주문 취소 환불은 혼입이 아니라 추적 자금으로 센다 |
 | 종착 | Blockscout 태그로 거래소·브리지(USDT0 OFT 포함)·믹서 판정, 그 외 컨트랙트, 이력 상한을 넘는 허브 |
 
@@ -83,6 +86,18 @@ Etherscan 호환 `/api`는 키 없이 시간당 10회라 쓰지 않는다.
 |---|---|---|
 | deBridge (DLN) | `stats-api.dln.trade` tx → orderId → 주문 | 목적 체인, 받는 주소, 도착 금액·토큰, 도착 tx. 취소 주문은 출발 주소 환불로 표시 |
 | LayerZero OFT (USDT0 등) | `scan.layerzero-api.com` tx → 메시지 | 목적 체인, 도착 tx. 받는 주소·금액은 OFT payload 끝 40바이트에서 해석 (Tron은 base58check) |
+
+## Tron 추적 (`pipeline/tron.py`)
+
+브리지 도착 Tron 주소에서 USDT(TRC-20) 흐름을 따라간다. 데이터는 TronScan 공개 API `token_trc20/transfers` (키 없음).
+
+| 처리 | 이유 (실데이터에서 확인) |
+|---|---|
+| 토큰 필터 없이 받고 USDT만 직접 거름 | `contract_address` 필터를 붙이면 TronScan이 total을 항상 10,000으로 돌려준다 (실제 26건이어도) |
+| 컨트랙트 주소라도 멈추지 않음 | 수수료 대납(건당 1.5 USDT) 스마트 계정도 컨트랙트로 나온다. 지갑처럼 쓰인다 |
+| 혼합 주소에서 멈춤 | 추적 자금이 유입의 절반 이하인 주소의 유출을 따라가면 리드가 남의 돈으로 불어난다 (사례 1에서 181건 → 59건) |
+| 모이는 곳 순위 | 추적 주소 2개 이상이 보낸 주소를 보고서에 순위로 표시 |
+| 거래소 판정은 태그가 있을 때만 | 키 없이는 TronScan 주소 태그가 거의 비어 있다 |
 
 ## 허브 판정 보강
 
@@ -122,9 +137,7 @@ HL 허브가 감지되면 그 허브로 토큰을 보낸 주소가 **토큰 발�
 ## 테스트 (오프라인)
 
 ```bash
-python3 -m pytest pipeline/tests -q                                  # 파이프라인 연결
-(cd hl_ledger && python3 -m pytest -q)                               # hl_ledger 정답 검증
-(cd hyperliquid-tracer && python3 -m unittest discover -s tests && python3 tests/verify_saved_cases.py)
+./run_tests.sh      # pipeline · hl_ledger · hyperliquid-tracer 전부 (네트워크 없음)
 ```
 
 ## 한계
@@ -132,5 +145,6 @@ python3 -m pytest pipeline/tests -q                                  # 파이프
 - 주소 공통성·그래프 연결은 소유권·불법성의 증명이 아니다. "이 자금이 어디로 갔는가"만 다룬다.
 - BTC 추적은 깊이·fan-in/out 30·tx 500개 제한이 있어 HL 계정의 Unit 입금 전부에 닿지 않을 수 있다 (보고서에 비율 표시).
 - Ethereum은 ETH와 주요 스테이블 4종만 본다. 거래소 판정은 공개 태그 기준이라 태그 없는 거래소 입금 주소는 일반 주소로 한 홉 더 따라간다.
-- Tron·Solana·Arbitrum·HyperEVM 도착 이후는 리드로만 남긴다 (브리지는 도착 주소까지 해석).
+- Tron은 USDT만, 거래소 판별은 태그가 있을 때만. Solana·Arbitrum·HyperEVM 도착 이후는 리드로만 남긴다.
+- `pipeline/tron.py`는 `eth.py`와 구조가 거의 같다 (BFS·판정·재판정). 체인 공통 부분을 하나로 묶는 정리가 남아 있다.
 - HL은 오래된 체결을 돌려주지 않는다. 대량 거래 계정은 `기록 누락 의심` 표식을 확인할 것.

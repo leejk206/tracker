@@ -18,6 +18,7 @@ import urllib.request
 V2 = "https://eth.blockscout.com/api/v2"
 USER_AGENT = "tracker-pipeline/0.1"
 MAX_PAGES = 120            # 엔드포인트당 페이지 상한 (×50건). 넘으면 truncated
+MAX_WITHDRAWAL_PAGES = 10  # 비콘 출금 페이지 상한 (페이지당 10초 넘게 걸린다. 최신순이라 종료 출금은 앞쪽에 있다)
 REQUEST_GAP = 0.12         # 초당 10회 한도 아래로
 MAX_RESET_WAIT = 120       # 429 재설정 대기가 이보다 길면 포기 (초)
 
@@ -62,11 +63,11 @@ def get(path: str, params: dict | None = None, retries: int = 6) -> dict:
     raise ApiError(f"{path}: {retries}회 시도 모두 실패 ({err})")
 
 
-def sweep(path: str, params: dict | None = None, max_pages: int = MAX_PAGES) -> tuple[list[dict], bool]:
+def sweep(path: str, params: dict | None = None, max_pages: int = MAX_PAGES, retries: int = 6) -> tuple[list[dict], bool]:
     """최신순 페이지를 끝까지. 돌려주는 bool은 '상한에 걸려 더 오래된 기록이 남았다'."""
     items, nxt = [], None
     for _ in range(max_pages):
-        page = get(path, {**(params or {}), **(nxt or {})})
+        page = get(path, {**(params or {}), **(nxt or {})}, retries=retries)
         items += page.get("items", [])
         nxt = page.get("next_page_params")
         if not nxt:
@@ -92,4 +93,12 @@ def fetch_address(address: str) -> dict:
         raw["tokens"] += rows
         truncated |= cut
     raw["truncated"] = truncated
+    # 스테이킹 회수(비콘 체인 출금)는 tx가 아니라 별도 기록. 출금이 있는 주소만 받는다 (검증인이 많으면 응답이 느리다)
+    raw["withdrawals"] = []
+    if (raw["info"] or {}).get("has_beacon_chain_withdrawals"):
+        try:
+            raw["withdrawals"], raw["withdrawals_truncated"] = sweep(f"/addresses/{address}/withdrawals",
+                                                                      max_pages=MAX_WITHDRAWAL_PAGES, retries=2)
+        except ApiError as e:
+            raw["withdrawals_error"] = str(e)
     return raw

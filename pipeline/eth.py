@@ -27,6 +27,7 @@ DUST = {"ETH": Decimal("0.001"), "USD": Decimal("1")}
 POISON_MAX = {"ETH": Decimal("0.1"), "USD": Decimal("100")}
 # 추적 자금 대비 이 비율 미만의 유출은 가스비·잔돈으로 보고 따라가지 않는다
 FOLLOW_SHARE = Decimal("0.01")
+MIN_BALANCE_LEAD = Decimal("0.1")   # 이보다 적은 잔액은 가스비 잔돈이라 리드로 남기지 않는다 (ETH)
 # HyperUnit Ethereum 출금 주소: Treasury(태그 있음)와 Treasury가 호출하는 배치 컨트랙트(태그 없음)
 UNIT_SENDERS = {"0xbea9f7fd27f4ee20066f18def0bc586ec221055a", "0x4bbe9b84aac9804557e8a90b7186324f20357e5c"}
 # tx 해시 없는 리드(Unit 기록에 ETH tx 미기재)는 금액·시각으로 입금을 찾는다
@@ -44,7 +45,10 @@ TERMINAL = {   # 태그·이름에 이 단어가 있으면 그 주소에서 멈�
     "DEX": ("uniswap", "1inch", "cow protocol", "cowswap", "gpv2", "0x:", "paraswap", "sushiswap", "curve",
             "router", "kyberswap", "odos"),
 }
-PASS_THROUGH = {"DEX", "스테이킹"}   # 이 종류의 주소는 종착이 아니다 (자금이 형태를 바꿔 돌아온다)
+PASS_THROUGH = {"DEX", "스테이킹"}
+# 태그 없는 거래소 입금 주소: 추적 자금의 95% 이상을 72시간 안에 거래소 태그 주소로 보냄
+DEPOSIT_SHARE = Decimal("0.95")
+DEPOSIT_WINDOW_MS = 72 * 3600 * 1000   # 이 종류의 주소는 종착이 아니다 (자금이 형태를 바꿔 돌아온다)
 
 
 @dataclass
@@ -133,6 +137,13 @@ def transfers(raw: dict) -> list[Transfer]:
         out[(tx, "token", t.get("log_index"))] = Transfer(_ms(t["timestamp"]), int(t["block_number"]), tx,
                                                           _a(t["from"]), _a(t["to"]), sym,
                                                           Decimal(t["total"]["value"]) / Decimal(10) ** dec, "token")
+    for w in raw.get("withdrawals", []):   # 비콘 체인 출금 (스테이킹 회수·보상)
+        v = int(w.get("amount") or 0)
+        if v > 0:
+            out[("withdrawal", w.get("index"))] = Transfer(_ms(w["timestamp"]), int(w["block_number"]),
+                                                           f"withdrawal:{w.get('index')}", "beacon",
+                                                           _a(w.get("receiver")) or raw["address"].lower(),
+                                                           "ETH", Decimal(v) / 10 ** 18, "withdrawal")
     return sorted(out.values(), key=lambda t: (t.block, t.time))
 
 
@@ -160,7 +171,11 @@ class EthAccount:
     outs: list[Transfer] = field(default_factory=list)   # 추적 시작 이후 실제 유출
     swaps_in: list[Transfer] = field(default_factory=list)
     returned: list[Transfer] = field(default_factory=list)
-    traced_total: dict[str, Decimal] = field(default_factory=dict)
+    staking_in: list[Transfer] = field(default_factory=list)   # 스테이킹 예치 뒤 비콘 출금으로 돌아온 것
+    deposit_of: str = ""   # 태그 없는 거래소 입금 주소로 보이면 그 거래소 이름
+    prior_balance: dict[str, Decimal] = field(default_factory=dict)   # 추적 입금 이전 순잔액 (먼지 제외)
+    traced_total: dict[str, Decimal] = field(default_factory=dict)   # 총액 (혼입 비율 기준)
+    traced_net: dict[str, Decimal] = field(default_factory=dict)     # 스왑으로 내보낸 만큼 뺀 순액 (표시·잔돈 기준)
     traced_last: int = 0
     noise_senders: set[str] = field(default_factory=set)
     leads: list[Lead] = field(default_factory=list)
@@ -228,11 +243,14 @@ def judge(acct: EthAccount, parent_level: int) -> None:
     acct.returned = [t for t in real_in if t not in traced and t not in acct.swaps_in
                      and ((t.frm in sent_to and t.block >= sent_to[t.frm])
                           or (bridged is not None and t.block >= bridged and lbls.get(t.frm, Label()).kind() == "브리지"))]
-    for t in traced + acct.swaps_in + acct.returned:
+    staked = min((t.block for t in acct.outs if lbls.get(t.to, Label()).kind() == "스테이킹"), default=None)
+    acct.staking_in = [t for t in real_in if t.kind == "withdrawal" and staked is not None and t.block >= staked]
+    for t in traced + acct.swaps_in + acct.returned + acct.staking_in:
         acct.traced_total[t.group] = acct.traced_total.get(t.group, Decimal(0)) + t.amount
     acct.traced_last = max(t.time for t in traced)
 
     other = [t for t in real_in if t not in traced and t not in acct.swaps_in and t not in acct.returned
+             and t not in acct.staking_in
              and start <= t.block <= end]
     prev_net: dict[str, Decimal] = defaultdict(Decimal)
     for t in prev:
@@ -247,10 +265,20 @@ def judge(acct: EthAccount, parent_level: int) -> None:
         if v > DUST[g]:
             mix[g] += v
 
-    traced_txt = ", ".join(f"{fmt(v)} {g}" for g, v in acct.traced_total.items())
+    # 순 추적 자금: 스왑으로 내보낸 만큼은 뺀다 (USDC → USDT 스왑이면 둘 다 더해져 두 배로 보이는 것 방지).
+    # 혼입 비율은 총액(traced_total) 기준 그대로 — 순액이 작아지면 먼지 입금 하나로도 '추정'이 되어버린다.
+    # 스테이킹 예치금은 회수(비콘 출금)를 실제로 받아온 경우에만 뺀다 — 회수 기록이 없는데 빼면 순액이 0에 가까워진다
+    swap_out: dict[str, Decimal] = defaultdict(Decimal)
+    for t in acct.outs:
+        if t.to in swapped_to or (acct.staking_in and lbls.get(t.to, Label()).kind() == "스테이킹"):
+            swap_out[t.group] += t.amount
+    acct.traced_net = {g: max(v - swap_out.get(g, Decimal(0)), Decimal(0)) for g, v in acct.traced_total.items()}
+    acct.prior_balance = {g: v for g, v in prev_net.items() if v > DUST[g]}
+    traced_txt = ", ".join(f"{fmt(v)} {g}" for g, v in acct.traced_net.items() if v)
     acct.basis.append(f"추적 자금 유입 {len(traced)}건" + (f" + 스왑 수령 {len(acct.swaps_in)}건" if acct.swaps_in else "")
                       + (f" + 되돌아온 자금 {len(acct.returned)}건" if acct.returned else "")
-                      + f" ({traced_txt})")
+                      + (f" + 스테이킹 회수 {len(acct.staking_in)}건" if acct.staking_in else "")
+                      + f" ({traced_txt}" + (", 스왑·스테이킹으로 내보낸 만큼 뺀 순액" if any(swap_out.values()) else "") + ")")
     prev_real = [t for t in prev if not (t.to == me and is_noise(t))]
     if acct.raw.get("truncated"):
         acct.basis.append(f"이력이 {blockscout.MAX_PAGES * 50:,}건을 넘어 오래된 기록 일부 미수집 — 원래 있던 자금 여부 불명")
@@ -270,9 +298,53 @@ def judge(acct: EthAccount, parent_level: int) -> None:
     if noise:
         acct.basis.append(f"주소 오염·먼지 유입 {len(noise)}건 제외")
     mixed = any(r >= MIXING_THRESHOLD for r in ratios.values()) or bool(foreign) or bool(acct.raw.get("truncated"))
-    acct.level = 1 if mixed else (3 if len(traced) == 1 and not other and not acct.swaps_in and not acct.returned else 2)
+    acct.level = 1 if mixed else (3 if len(traced) == 1 and not (other or acct.swaps_in or acct.returned or acct.staking_in) else 2)
     acct.basis.append(f"주소 구간 {LEVEL_NAME[acct.level]}")
     acct.path_level = min(parent_level, acct.level)
+
+
+def deposit_address_of(acct: EthAccount, lbls: dict[str, Label]) -> str:
+    """태그 없는 거래소 입금 주소 휴리스틱: 받은 추적 자금의 대부분을 곧바로 거래소 핫월렛으로 쓸어 보냈는가.
+
+    거래소 입금 주소는 사용자별로 만들어져 태그가 없고, 들어온 돈을 바로 핫월렛으로 모은다.
+    돌려주는 값은 거래소 이름 (예: "Binance"), 아니면 "".
+    """
+    # 거래소 입금 주소는 돈을 쌓아두지 않는다: 추적 입금 전부터 잔액이 있었으면 아니다
+    if acct.label.text or not acct.outs or not acct.traced_last or acct.prior_balance or acct.raw.get("truncated"):
+        return ""
+    to_ex = [t for t in acct.outs if lbls.get(t.to, Label()).kind() == "거래소"]
+    if not to_ex:
+        return ""
+    by_group: dict[str, Decimal] = defaultdict(Decimal)
+    for t in to_ex:
+        if t.time - acct.traced_last <= DEPOSIT_WINDOW_MS:
+            by_group[t.group] += t.amount
+    if not any(v >= acct.traced_total.get(g, Decimal(0)) * DEPOSIT_SHARE and acct.traced_total.get(g)
+               for g, v in by_group.items()):
+        return ""
+    name = lbls[to_ex[0].to].text
+    return name.split(":")[0].split("·")[0].strip() or "거래소"
+
+
+def deposit_note(acct: EthAccount) -> str:
+    return (f"{acct.deposit_of} 입금 주소로 보임 — 태그는 없지만 받은 돈의 {DEPOSIT_SHARE * 100:.0f}% 이상을 "
+            f"{DEPOSIT_WINDOW_MS // 3600000}시간 안에 {acct.deposit_of} 핫월렛으로 보냄")
+
+
+def staking_note(acct: EthAccount) -> str:
+    """스테이킹 예치·회수 요약. 비콘 출금을 받아왔으면 실제 회수액과 보상을, 못 받았으면 그 사실을 적는다."""
+    lbls = labels(acct.raw)
+    deposited = sum((t.amount for t in acct.outs if lbls.get(t.to, Label()).kind() == "스테이킹"), Decimal(0))
+    back = sum((t.amount for t in acct.staking_in), Decimal(0))
+    if acct.staking_in:
+        first, last = min(t.time for t in acct.staking_in), max(t.time for t in acct.staking_in)
+        from hl_ledger.analyze import ts
+        cut = " — 출금 기록이 많아 최근 것만 조회, 회수액은 하한값" if acct.raw.get("withdrawals_truncated") else ""
+        return (f"스테이킹 예치 {fmt(deposited)} ETH → 비콘 출금 {len(acct.staking_in)}건 {fmt(back)} ETH 회수 "
+                f"(예치 대비 {fmt(back - deposited)} ETH, {ts(first)[:10]} ~ {ts(last)[:10]}){cut}")
+    if acct.raw.get("withdrawals_error"):
+        return f"스테이킹 예치 {fmt(deposited)} ETH — 비콘 출금 조회 실패, 이후 유출로 이어서 추적"
+    return f"스테이킹 예치 {fmt(deposited)} ETH — 비콘 출금 기록 없음 (아직 회수 안 함 또는 다른 주소로 회수)"
 
 
 def seeds_from_leads(leads: list[Lead]) -> dict[str, dict]:
@@ -333,13 +405,13 @@ def eth_stage(seeds: dict[str, dict], fetch: Callable[[str], dict], hops: int = 
             why = f"거래 {blockscout.MAX_PAGES * 50:,}건 이상 허브" if acct.stop == "허브" else f"{acct.stop} 주소"
             acct.basis.append(f"{why} — 추적 종료")
             log(f"  {why} — 추적 종료")
-            for g, v in acct.traced_total.items():
+            for g, v in (acct.traced_net or acct.traced_total).items():
                 acct.leads.append(Lead("ethereum", acct.address, "", g, v, None, acct.traced_last, acct.address,
                                        f"{acct.stop} 도달" + (f" ({lbl.text})" if lbl.text else ""), acct.path_level))
             continue
 
         for t in acct.outs:
-            total = acct.traced_total.get(t.group)
+            total = acct.traced_net.get(t.group) or acct.traced_total.get(t.group)
             if total and t.amount < total * FOLLOW_SHARE:
                 continue   # 가스비·잔돈
             to_lbl = lbls.get(t.to, Label())
@@ -354,9 +426,7 @@ def eth_stage(seeds: dict[str, dict], fetch: Callable[[str], dict], hops: int = 
             elif to_kind == "스테이킹":
                 edge["result"] = "스테이킹 예치"
                 if not any(b.startswith("스테이킹") for b in acct.basis):
-                    acct.basis.append(
-                        "스테이킹 예치 — 회수(비콘 체인 출금)는 일반 tx가 아니라 기록에 안 잡힘. 이후 유출로 이어서 추적"
-                        + (" (이 주소에 비콘 출금 기록 있음)" if (raw.get("info") or {}).get("has_beacon_chain_withdrawals") else ""))
+                    acct.basis.append(staking_note(acct))
             elif to_kind or to_lbl.is_contract:
                 edge["result"] = to_kind or "컨트랙트"
                 acct.leads.append(Lead("ethereum", t.to, t.tx, t.asset, t.amount, None, t.time, acct.address,
@@ -378,11 +448,15 @@ def eth_stage(seeds: dict[str, dict], fetch: Callable[[str], dict], hops: int = 
                 acct.leads.append(Lead("ethereum", t.to, t.tx, t.asset, t.amount, None, t.time, acct.address,
                                        "미추적 ETH 송금 (홉·주소 상한)", acct.path_level))
 
+        acct.deposit_of = deposit_address_of(acct, lbls)
+        if acct.deposit_of:
+                acct.basis.append(deposit_note(acct))
+
         # 남은 잔액이 추적 자금의 1% 이상이면 리드로
         info = raw.get("info") or {}
         bal = Decimal(int(info.get("coin_balance") or 0)) / 10 ** 18
         eth_in = acct.traced_total.get("ETH")
-        if eth_in and bal >= eth_in * FOLLOW_SHARE:
+        if eth_in and bal >= max(eth_in * FOLLOW_SHARE, MIN_BALANCE_LEAD):
             acct.leads.append(Lead("ethereum", acct.address, "", "ETH", bal, None, raw.get("fetchedAt", 0),
                                    acct.address, "잔액 보유 (조회 시점)", acct.path_level))
     rejudge(accounts, edges, pending)
@@ -403,10 +477,12 @@ def rejudge(accounts: dict[str, EthAccount], edges: list[dict], pending: dict[st
         seed_level = pending.get(acct.key, {}).get("level", 0) if acct.hop == 0 else 0
         parent_level = max([accounts[p].path_level for p in acct.parents if p in accounts] + [seed_level])
         stop_lines = [b for b in acct.basis if b.endswith("추적 종료") or b.startswith(("주의:", "스테이킹"))]
-        acct.basis, acct.traced_total, acct.swaps_in, acct.returned = [], {}, [], []
+        acct.basis, acct.traced_total, acct.traced_net, acct.swaps_in, acct.returned, acct.staking_in = [], {}, {}, [], [], []
         judge(acct, parent_level)
         if acct.label.text:
             acct.basis.insert(0, f"태그: {acct.label.text}")
         acct.basis += stop_lines
+        if acct.deposit_of:
+            acct.basis.append(deposit_note(acct))
         for lead in acct.leads:
             lead.level = acct.path_level
