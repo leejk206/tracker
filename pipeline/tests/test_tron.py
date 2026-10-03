@@ -125,7 +125,7 @@ def test_tx_match_and_amount_match_together():
     raws = {R1: raw(R1, [tr("aa", "Tbridge", R1, 1000, 0), tr("zz", "Tbridge2", R1, 700, 50), tr("y", R1, OTHER, 1700, 99)])}
     accounts, _, _ = run(raws, [lead(R1, "aa", "1000"), lead(R1, "", "700.1")], hops=0)
     acct = accounts[R1]
-    assert acct.traced_total == Decimal(1700) and tron.LEVEL_NAME[acct.level] == "계정 단위 확정"
+    assert acct.traced_total["USD"] == Decimal(1700) and tron.LEVEL_NAME[acct.level] == "계정 단위 확정"
 
 
 def test_exchange_tag_stops():

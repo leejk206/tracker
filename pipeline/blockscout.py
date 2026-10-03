@@ -1,9 +1,10 @@
-"""Ethereum 공개 API 수집기 — Blockscout v2 (인증 없음, 누구나 같은 응답).
+"""EVM 체인 공개 API 수집기 — Blockscout v2 (인증 없음, 누구나 같은 응답).
 
 v2 주소 API는 최신순·페이지당 50건이고 주소 오염 스팸이 수천 건 쌓인 주소가 흔하다. 그래서 페이지를 끝까지
 (상한까지) 넘겨 이력 전체를 받는다. 토큰은 화이트리스트 컨트랙트별로 필터해서 가짜 토큰 스팸을 피한다.
 
 키 없는 한도: v2는 초당 약 10회. Etherscan 호환 `/api`는 시간당 10회라 쓰지 않는다.
+체인 하나 추가 = EVM_CHAINS에 Blockscout 주소·기본 자산·토큰 화이트리스트 한 줄.
 """
 from __future__ import annotations
 
@@ -15,28 +16,47 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-V2 = "https://eth.blockscout.com/api/v2"
 USER_AGENT = "tracker-pipeline/0.1"
 MAX_PAGES = 120            # 엔드포인트당 페이지 상한 (×50건). 넘으면 truncated
 MAX_WITHDRAWAL_PAGES = 10  # 비콘 출금 페이지 상한 (페이지당 10초 넘게 걸린다. 최신순이라 종료 출금은 앞쪽에 있다)
 REQUEST_GAP = 0.12         # 초당 10회 한도 아래로
 MAX_RESET_WAIT = 120       # 429 재설정 대기가 이보다 길면 포기 (초)
 
-# 실제 자산으로 인정하는 토큰 (컨트랙트 주소 → 심볼, 소수점). 심볼 "ETH"짜리 가짜 토큰이 흔하다.
-WHITELIST = {
-    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": ("USDC", 6),
-    "0xdac17f958d2ee523a2206206994597c13d831ec7": ("USDT", 6),
-    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2": ("WETH", 18),
-    "0x6b175474e89094c44da98b954eedeac495271d0f": ("DAI", 18),
+# 체인별 설정. 토큰은 실제 자산으로 인정하는 컨트랙트만 (주소 → 심볼, 소수점) — 심볼 "ETH"·"USDC"짜리 가짜 토큰이 흔하다.
+EVM_CHAINS = {
+    "ethereum": {"name": "Ethereum", "base": "https://eth.blockscout.com/api/v2", "native": "ETH", "tokens": {
+        "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": ("USDC", 6),
+        "0xdac17f958d2ee523a2206206994597c13d831ec7": ("USDT", 6),
+        "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2": ("WETH", 18),
+        "0x6b175474e89094c44da98b954eedeac495271d0f": ("DAI", 18)}},
+    "arbitrum": {"name": "Arbitrum", "base": "https://arbitrum.blockscout.com/api/v2", "native": "ETH", "tokens": {
+        "0xaf88d065e77c8cc2239327c5edb3a432268e5831": ("USDC", 6),
+        "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8": ("USDC.e", 6),
+        "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9": ("USDT", 6),
+        "0x82af49447d8a07e3bd95bd0d56f35241523fbab1": ("WETH", 18)}},
+    "base": {"name": "Base", "base": "https://base.blockscout.com/api/v2", "native": "ETH", "tokens": {
+        "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": ("USDC", 6),
+        "0xfde4c96c8593536e31f229ea8f37b2ada2699bb2": ("USDT", 6),
+        "0x4200000000000000000000000000000000000006": ("WETH", 18)}},
+    "optimism": {"name": "Optimism", "base": "https://optimism.blockscout.com/api/v2", "native": "ETH", "tokens": {
+        "0x0b2c639c533813f4aa9d7837caf62653d097ff85": ("USDC", 6),
+        "0x94b008aa00579c1307b0ef2c499ad98a8ce58e58": ("USDT", 6),
+        "0x4200000000000000000000000000000000000006": ("WETH", 18)}},
+    "polygon": {"name": "Polygon", "base": "https://polygon.blockscout.com/api/v2", "native": "POL", "tokens": {
+        "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359": ("USDC", 6),
+        "0xc2132d05d31c914a87c6611c10748aeb04b58e8f": ("USDT", 6),
+        "0x7ceb23fd6bc0add59e62ac25578270cff1b9f619": ("WETH", 18)}},
 }
+V2 = EVM_CHAINS["ethereum"]["base"]
+WHITELIST = EVM_CHAINS["ethereum"]["tokens"]   # 이전 코드 호환
 
 
 class ApiError(RuntimeError):
     pass
 
 
-def get(path: str, params: dict | None = None, retries: int = 6) -> dict:
-    url = V2 + path + ("?" + urllib.parse.urlencode(params) if params else "")
+def get(path: str, params: dict | None = None, retries: int = 6, base: str = V2) -> dict:
+    url = base + path + ("?" + urllib.parse.urlencode(params) if params else "")
     err = ""
     for attempt in range(retries):
         time.sleep(REQUEST_GAP)
@@ -63,11 +83,12 @@ def get(path: str, params: dict | None = None, retries: int = 6) -> dict:
     raise ApiError(f"{path}: {retries}회 시도 모두 실패 ({err})")
 
 
-def sweep(path: str, params: dict | None = None, max_pages: int = MAX_PAGES, retries: int = 6) -> tuple[list[dict], bool]:
+def sweep(path: str, params: dict | None = None, max_pages: int = MAX_PAGES, retries: int = 6,
+          base: str = V2) -> tuple[list[dict], bool]:
     """최신순 페이지를 끝까지. 돌려주는 bool은 '상한에 걸려 더 오래된 기록이 남았다'."""
     items, nxt = [], None
     for _ in range(max_pages):
-        page = get(path, {**(params or {}), **(nxt or {})}, retries=retries)
+        page = get(path, {**(params or {}), **(nxt or {})}, retries=retries, base=base)
         items += page.get("items", [])
         nxt = page.get("next_page_params")
         if not nxt:
@@ -75,21 +96,20 @@ def sweep(path: str, params: dict | None = None, max_pages: int = MAX_PAGES, ret
     return items, True
 
 
-def transaction(tx: str) -> dict:
-    return get(f"/transactions/{tx}")
-
-
-def fetch_address(address: str) -> dict:
-    """한 주소의 원자료 묶음 (eth.judge는 이 dict만 보고 동작 — 오프라인 재분석 가능)."""
-    raw = {"address": address, "fetchedAt": int(time.time() * 1000), "info": get(f"/addresses/{address}")}
+def fetch_address(address: str, chain: str = "ethereum") -> dict:
+    """한 주소의 원자료 묶음 (engine.judge는 이 dict만 보고 동작 — 오프라인 재분석 가능)."""
+    cfg = EVM_CHAINS[chain]
+    base = cfg["base"]
+    raw = {"address": address, "chain": chain, "fetchedAt": int(time.time() * 1000),
+           "info": get(f"/addresses/{address}", base=base)}
     truncated = False
-    raw["txs"], cut = sweep(f"/addresses/{address}/transactions")
+    raw["txs"], cut = sweep(f"/addresses/{address}/transactions", base=base)
     truncated |= cut
-    raw["internal"], cut = sweep(f"/addresses/{address}/internal-transactions")
+    raw["internal"], cut = sweep(f"/addresses/{address}/internal-transactions", base=base)
     truncated |= cut
     raw["tokens"] = []
-    for contract in WHITELIST:
-        rows, cut = sweep(f"/addresses/{address}/token-transfers", {"type": "ERC-20", "token": contract})
+    for contract in cfg["tokens"]:
+        rows, cut = sweep(f"/addresses/{address}/token-transfers", {"type": "ERC-20", "token": contract}, base=base)
         raw["tokens"] += rows
         truncated |= cut
     raw["truncated"] = truncated
@@ -98,7 +118,8 @@ def fetch_address(address: str) -> dict:
     if (raw["info"] or {}).get("has_beacon_chain_withdrawals"):
         try:
             raw["withdrawals"], raw["withdrawals_truncated"] = sweep(f"/addresses/{address}/withdrawals",
-                                                                      max_pages=MAX_WITHDRAWAL_PAGES, retries=2)
+                                                                      max_pages=MAX_WITHDRAWAL_PAGES, retries=2,
+                                                                      base=base)
         except ApiError as e:
             raw["withdrawals_error"] = str(e)
     return raw

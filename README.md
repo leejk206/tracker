@@ -1,7 +1,10 @@
-# tracker — BTC → HyperUnit → Hyperliquid 자금 흐름 추적
+# tracker — 크로스체인 자금 흐름 추적
 
-BTC tx나 주소 하나를 넣으면 **UTXO 소비 관계 → HyperUnit 입금 → HL 계정 내부 매매 → HL 계정 간 송금 → Ethereum 출금 → ETH 주소 간 이동**까지
-한 번에 따라가고, 구간마다 연결 확실도를 붙여 보고서로 뽑는다. 거래소·브리지·믹서에 닿거나 상한에 걸리면 멈추고 다음 추적 리드로 남긴다.
+BTC tx·주소, HL 계정, 또는 **아무 지원 체인의 주소** 하나를 넣으면 체인을 넘나드는 자금 흐름을 따라가고,
+구간마다 연결 확실도를 붙여 보고서로 뽑는다. 거래소·브리지·믹서에 닿거나 상한에 걸리면 멈추고 다음 추적 리드로 남긴다.
+
+- 체인: BTC(→HL) · Hyperliquid · Ethereum · Arbitrum · Base · Optimism · Polygon · Tron
+- 체인 사이: HyperUnit(BTC/ETH/SOL ↔ HL), HL ↔ Arbitrum USDC, deBridge, LayerZero OFT(USDT0)
 
 공개 API만 쓴다 (인증 없음, 누구나 같은 결과). Python 3.10+ 표준 라이브러리만 사용 — 설치할 것 없음.
 
@@ -9,7 +12,7 @@ BTC tx나 주소 하나를 넣으면 **UTXO 소비 관계 → HyperUnit 입금 �
 |---|---|
 | `hyperliquid-tracer/` | BTC UTXO BFS + HyperUnit 매칭 → HL 계정 ([README](hyperliquid-tracer/README.md)) |
 | `hl_ledger/` | HL 계정 원장·체결 → 입출금 표 + 1:1 판정 ([README](hl_ledger/README.md)) |
-| `pipeline/` | 위 둘을 잇고 HL 송금 홉 → Ethereum 추적(`eth.py`, Blockscout) → 브리지 목적지(`bridges.py`) → 다음 체인 리드까지 정리 |
+| `pipeline/` | 위 둘을 잇고 체인 공통 엔진(`engine.py`) + 체인 어댑터(`adapters.py`)로 체인 단계 ↔ 브리지 해석(`bridges.py`)을 반복(`flow.py`) |
 
 **사례 3건 결과 요약은 [FINDINGS.md](FINDINGS.md).**
 
@@ -18,6 +21,8 @@ BTC tx나 주소 하나를 넣으면 **UTXO 소비 관계 → HyperUnit 입금 �
 ```bash
 python3 -m pipeline --address bc1ql4u94klk265lnfur2ujk9p6uh52f2a8jhf6f37 --out out/case2 --hl-hops 2
 python3 -m pipeline --tx 4695e2121fa84fd1d7ca41a8f481774bdf383e231cf290f56c6ac734bc018a83 --out out/case1
+python3 -m pipeline --start ethereum:0x49D52e55FA049878446712C4D7E59fc07106DD19 --out out/x   # 아무 체인 주소에서 시작
+python3 -m pipeline --start arbitrum:0x… tron:T… --out out/x                                     # 여러 체인 주소 동시에
 python3 -m pipeline --trace hyperliquid-tracer/output/traces/<시작>.json --out out/x   # 저장된 BTC 추적 재사용
 python3 -m pipeline --hl 0x3A37880ff9EbD7B45376Ef15bDA69Cefc0016575 --out out/x         # HL 계정부터
 python3 -m pipeline ... --reuse                                                         # 받아둔 HL·ETH 원자료 재사용
@@ -29,8 +34,9 @@ python3 -m pipeline ... --eth-hops -1                                           
 | `--max-depth` | 7 | BTC 추적 최대 깊이 |
 | `--hl-hops` | 1 | HL 계정 간 송금을 따라갈 단계 수 (0이면 BTC로 찾은 계정만) |
 | `--max-accounts` | 50 | 조회할 HL 계정 상한. 넘친 송금은 리드로 남음 |
-| `--eth-hops` | 2 | Ethereum 출금 주소에서 따라갈 단계 수 (0이면 출금 주소만, -1이면 ETH 단계 생략) |
-| `--max-eth` | 30 | 조회할 ETH 주소 상한 |
+| `--start` | - | `<체인>:<주소>` (ethereum·arbitrum·base·optimism·polygon·tron). 들어온 자금 전체를 추적 대상으로 시작 |
+| `--eth-hops` | 2 | EVM 체인에서 따라갈 단계 수 (0이면 도착 주소만, -1이면 EVM 단계 생략) |
+| `--max-eth` | 30 | EVM 체인별 조회할 주소 상한 |
 | `--no-bridges` | - | 브리지 목적지 조회 생략 |
 | `--tron-hops` | 2 | Tron 도착 주소에서 따라갈 단계 수 (-1이면 Tron 단계 생략) |
 | `--max-tron` | 30 | 조회할 Tron 주소 상한 |
@@ -61,7 +67,21 @@ python3 -m pipeline ... --eth-hops -1                                           
 **허브 감지**: 송금으로 따라간 계정이 유입 50건 이상이고 추적 자금 비중이 1% 미만이면 브리지·거래소·서비스 지갑으로 보고 거기서 멈춘다.
 그 계정의 유출은 남의 자금과 섞여 있어 리드로 쓰지 않는다.
 
-## Ethereum 추적 (`pipeline/eth.py`)
+## 구조: 체인 공통 엔진 + 어댑터
+
+체인 하나 추가 = 어댑터 하나. 추적·판정·재판정·리드는 모든 체인이 `engine.py`를 같이 쓴다.
+
+| 파일 | 역할 |
+|---|---|
+| `engine.py` | 주소 BFS, 연결 판정(추적 자금 외 유입 1%), 갈래 합류 재판정, 스왑·스테이킹·환불 이어 붙이기, 주소 오염 제외, 입금 주소·잔액 리드 |
+| `adapters.py` | 체인별 원자료 → 전송·태그·규칙. EVM은 `blockscout.EVM_CHAINS`에 Blockscout 주소·기본 자산·토큰 화이트리스트 한 줄로 추가 |
+| `flow.py` | HL 단계(또는 `--start`) → [체인 단계들 → 브리지 해석] 반복. 다른 단계에서 넘어온 리드만 다음 시작점 |
+| `eth.py`·`tron.py` | 예전 이름 유지용 얇은 래퍼 (Tron 원자료 수집은 `tron.py`) |
+
+체인별 규칙 차이 (어댑터 설정): Tron은 수수료 대납 스마트 계정 때문에 컨트랙트에서 멈추지 않고, 혼합 주소(추적 자금이 유입의 절반 이하)에서 멈춘다.
+EVM은 태그 없는 컨트랙트에서 멈춘다. HL → Arbitrum USDC 출금은 수수료(1 USDC)를 뺀 금액·시각으로 도착을 찾는다.
+
+## EVM 체인 추적
 
 데이터는 Blockscout v2 공개 API(키 없음, 초당 약 10회)의 일반 tx · internal tx · 토큰 전송.
 Etherscan 호환 `/api`는 키 없이 시간당 10회라 쓰지 않는다.
@@ -146,5 +166,7 @@ HL 허브가 감지되면 그 허브로 토큰을 보낸 주소가 **토큰 발�
 - BTC 추적은 깊이·fan-in/out 30·tx 500개 제한이 있어 HL 계정의 Unit 입금 전부에 닿지 않을 수 있다 (보고서에 비율 표시).
 - Ethereum은 ETH와 주요 스테이블 4종만 본다. 거래소 판정은 공개 태그 기준이라 태그 없는 거래소 입금 주소는 일반 주소로 한 홉 더 따라간다.
 - Tron은 USDT만, 거래소 판별은 태그가 있을 때만. Solana·Arbitrum·HyperEVM 도착 이후는 리드로만 남긴다.
-- `pipeline/tron.py`는 `eth.py`와 구조가 거의 같다 (BFS·판정·재판정). 체인 공통 부분을 하나로 묶는 정리가 남아 있다.
+- HyperEVM은 키 없는 탐색기 API가 없어 리드로만 남는다 (Etherscan v2 무료 키가 있으면 EVM 어댑터로 붙일 수 있다).
+- BSC는 Blockscout 공개 인스턴스가 없다. Solana·Bitcoin(출금 방향)도 아직 어댑터가 없다.
+- 브리지 해석은 deBridge·LayerZero OFT만. Socket·LI.FI·Across 등은 브리지 입금으로 판별만 하고 목적지는 리드로 남는다.
 - HL은 오래된 체결을 돌려주지 않는다. 대량 거래 계정은 `기록 누락 의심` 표식을 확인할 것.

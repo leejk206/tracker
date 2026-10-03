@@ -166,7 +166,8 @@ def resolve(lead: Lead, get=_get) -> list[BridgeHop]:
 
 
 def is_bridge_lead(l: Lead) -> bool:
-    return l.chain == "ethereum" and l.kind.startswith("브리지 입금") and bool(l.tx)
+    from .blockscout import EVM_CHAINS
+    return l.chain in EVM_CHAINS and l.kind.startswith("브리지 입금") and bool(l.tx)
 
 
 def resolve_all(leads: list[Lead], get: Callable[[str], dict] = _get, log=print) -> dict[str, list[BridgeHop]]:
