@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# 분석 산출물 (실제 지갑 조회 결과, 31MB) — scripts로 재생성 가능
+hl_ledger/out/
+
+# 팀 내부 자료 — public 저장소에 올리지 않음 (팀원 실명·노션 URL·회의 내용)
+context/
+
+# 환경/에디터
+.env
+.env.*
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
