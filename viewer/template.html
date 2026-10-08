@@ -1,0 +1,616 @@
+<title>Tracker 사례 뷰어</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;700&display=swap">
+<style>
+/* 레이아웃: 위 사례 탭·요약 → 왼쪽 단계별 흐름 그래프 / 오른쪽 연결 근거 패널 (좁으면 위아래로) */
+:root {
+  --bg: #F4F4F8; --paper: #FFFFFF; --ink: #171A21; --ink-2: #474D5E; --muted: #737A8C; --line: #DCDDE6; --line-2: #ECEDF3;
+  --edge: #9AA0B2; --band: #F1F1F7;
+  --accent: #5B3FD9; --accent-soft: #ECE8FC;
+  --lv-confirmed: #1C7F6B; --lv-account: #5B3FD9; --lv-inferred: #B86E0C; --lv-lead: #858B9C;
+  --font-body: "IBM Plex Sans KR", "Noto Sans KR", "Apple SD Gothic Neo", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --gutter: 20px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111218; --paper: #1A1B23; --ink: #E9EAF0; --ink-2: #B9BCC9; --muted: #8C90A0; --line: #2E303B; --line-2: #24252F;
+    --edge: #5E6375; --band: #20212B;
+    --accent: #9C88FF; --accent-soft: #2A2546;
+    --lv-confirmed: #3FB79B; --lv-account: #9C88FF; --lv-inferred: #E09A3A; --lv-lead: #7D8292;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111218; --paper: #1A1B23; --ink: #E9EAF0; --ink-2: #B9BCC9; --muted: #8C90A0; --line: #2E303B; --line-2: #24252F;
+  --edge: #5E6375; --band: #20212B;
+  --accent: #9C88FF; --accent-soft: #2A2546;
+  --lv-confirmed: #3FB79B; --lv-account: #9C88FF; --lv-inferred: #E09A3A; --lv-lead: #7D8292;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 var(--font-body); }
+a { color: var(--accent); text-underline-offset: 2px; }
+button, input { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+.app { display: grid; grid-template-rows: auto auto 1fr auto; height: 100%; padding-inline: var(--gutter); }
+header.top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; padding-block: 16px 10px; }
+header.top h1 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -.01em; }
+header.top .sub { color: var(--muted); font-size: 13px; }
+.tabs { display: flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
+.tab { border: 1px solid var(--line); background: var(--paper); border-radius: 6px; padding: 5px 12px; cursor: pointer; font-size: 13px; }
+.tab[aria-selected="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 500; }
+
+.summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 22px; padding-block: 10px 12px; border-top: 1px solid var(--line); }
+.summary .what { flex: 1 1 420px; min-width: 0; }
+.summary .what b { font-weight: 700; }
+.summary .what p { margin: 2px 0 0; color: var(--ink-2); font-size: 14px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; padding: 3px 9px; border-radius: 999px; background: var(--paper); border: 1px solid var(--line); white-space: nowrap; }
+.dot { width: 9px; height: 9px; border-radius: 50%; flex: none; display: inline-block; }
+.dot.c { background: var(--lv-confirmed); } .dot.a { background: var(--lv-account); } .dot.i { background: var(--lv-inferred); }
+.dot.l { background: transparent; border: 1.5px dashed var(--lv-lead); } .dot.s { background: var(--ink); }
+
+main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 14px; min-height: 0; }
+.stage { position: relative; background: var(--paper); border: 1px solid var(--line); border-radius: 8px; min-height: 0; overflow: hidden; }
+#cy { position: absolute; inset: 52px 0 0 0; }
+.toolbar { position: absolute; top: 0; left: 0; right: 0; height: 52px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--line-2); z-index: 2; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; background: var(--paper); padding: 5px 12px; font-size: 13px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
+.toolbar input { width: 200px; max-width: 100%; padding: 5px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); font-size: 13px; }
+.btn { border: 1px solid var(--line); background: var(--paper); border-radius: 6px; padding: 5px 10px; font-size: 13px; cursor: pointer; }
+.btn:hover, .seg button:hover { color: var(--accent); }
+.btn[aria-pressed="false"] { color: var(--muted); }
+.toolbar .sp { flex: 1; }
+.hint { position: absolute; bottom: 8px; right: 10px; max-width: calc(100% - 20px); font-size: 12px; color: var(--muted); pointer-events: none; background: var(--paper); padding: 2px 8px; border-radius: 4px; border: 1px solid var(--line-2); }
+
+aside.panel { background: var(--paper); border: 1px solid var(--line); border-radius: 8px; overflow: auto; min-height: 0; padding: 16px 18px; }
+.panel h2 { font-size: 12px; font-weight: 500; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; margin: 0 0 8px; font-family: var(--font-mono); }
+.panel h3 { font-size: 13px; color: var(--muted); font-weight: 500; margin: 18px 0 6px; }
+.panel .big { font-size: 18px; font-weight: 700; margin: 0; line-height: 1.35; }
+.addr { font-family: var(--font-mono); font-size: 13px; word-break: break-all; line-height: 1.45; }
+.row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
+.badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; padding: 2px 8px; border-radius: 4px; border: 1px solid currentColor; }
+.badge.c { color: var(--lv-confirmed); } .badge.a { color: var(--lv-account); } .badge.i { color: var(--lv-inferred); } .badge.l { color: var(--lv-lead); border-style: dashed; } .badge.s { color: var(--ink); }
+.linkbtn { font-size: 12.5px; }
+ul.basis { margin: 0; padding-left: 18px; color: var(--ink-2); font-size: 14px; }
+ul.basis li + li { margin-top: 3px; }
+.path { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+.path li { display: grid; grid-template-columns: 12px minmax(0, 1fr); gap: 8px; align-items: start; padding: 3px 0; }
+.path li .dot { margin-top: 5px; }
+.link { all: unset; cursor: pointer; font-family: var(--font-mono); font-size: 12.5px; }
+.link:hover { color: var(--accent); text-decoration: underline; }
+.meta { color: var(--muted); font-family: var(--font-body); font-size: 12px; }
+table.flows { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.flows td { padding: 5px 4px; border-top: 1px solid var(--line-2); vertical-align: top; }
+table.flows td.n { text-align: right; white-space: nowrap; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.members { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; font-size: 12.5px; }
+.legend { display: grid; gap: 7px; font-size: 13.5px; color: var(--ink-2); }
+.legend div { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 8px; align-items: start; }
+.legend .dot { margin-top: 6px; }
+.empty p { color: var(--ink-2); font-size: 14px; margin: 0 0 10px; }
+.copy { border: 1px solid var(--line); background: transparent; border-radius: 4px; padding: 1px 7px; font-size: 12px; cursor: pointer; }
+.primary { border: 1px solid var(--accent); color: var(--accent); background: var(--accent-soft); border-radius: 6px; padding: 4px 10px; font-size: 13px; cursor: pointer; }
+
+footer.foot { display: flex; flex-wrap: wrap; gap: 4px 18px; padding-block: 10px 14px; font-size: 12px; color: var(--muted); }
+footer.foot .r { margin-left: auto; }
+
+@media (max-width: 900px) {
+  .app { height: auto; grid-template-rows: auto; }
+  main { grid-template-columns: minmax(0, 1fr); }
+  .stage { height: 64vh; min-height: 420px; }
+  #cy { inset: 92px 0 0 0; }
+  .toolbar { height: 92px; align-content: center; }
+  .tabs { margin-left: 0; }
+  :root { --gutter: 16px; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.2/cytoscape.min.js"></script>
+<!--BODY-->
+<div class="app">
+  <header class="top">
+    <h1>Tracker 사례 뷰어</h1>
+    <span class="sub">BTC · Hyperliquid · Ethereum · Tron 자금 흐름 추적 결과</span>
+    <nav class="tabs" role="tablist" id="tabs"></nav>
+  </header>
+  <section class="summary" id="summary"></section>
+  <main>
+    <div class="stage">
+      <div class="toolbar">
+        <div class="seg" role="group" aria-label="보기 방식">
+          <button type="button" id="m-sum" aria-pressed="true">요약</button>
+          <button type="button" id="m-all" aria-pressed="false">전체 주소</button>
+        </div>
+        <input id="q" type="search" placeholder="주소 검색 후 Enter" aria-label="주소 검색">
+        <span class="sp"></span>
+        <button class="btn" id="leads" type="button" aria-pressed="true">리드 표시</button>
+        <button class="btn" id="fit" type="button">전체 보기</button>
+      </div>
+      <div id="cy" role="img" aria-label="자금 흐름 그래프"></div>
+      <div class="hint" id="hint"></div>
+    </div>
+    <aside class="panel" id="panel" aria-live="polite"></aside>
+  </main>
+  <footer class="foot">
+    <span>공개 API 데이터 · 조회 2026-10-03 UTC</span>
+    <span>주소 연결은 자금 이동 경로만 나타냄. 소유자나 불법성 판단이 아님</span>
+    <span class="r"><a href="https://github.com/leejk206/tracker" target="_blank" rel="noopener">소스 코드</a></span>
+  </footer>
+</div>
+<script>
+const DATA = /*__DATA__*/null;
+
+const LV = { "확정": "c", "계정 단위 확정": "a", "추정": "i", "리드": "l" };
+const LV_VAR = { c: "--lv-confirmed", a: "--lv-account", i: "--lv-inferred", l: "--lv-lead" };
+const RANK = { "확정": 3, "계정 단위 확정": 2, "추정": 1, "리드": 0 };
+const CHAIN_NAME = { bitcoin: "Bitcoin", hyperliquid: "Hyperliquid", ethereum: "Ethereum", arbitrum: "Arbitrum", base: "Base", optimism: "Optimism", polygon: "Polygon", tron: "Tron", hyperevm: "HyperEVM", solana: "Solana" };
+const EXPLORER = {
+  bitcoin: { addr: a => `https://mempool.space/address/${a}`, tx: t => `https://mempool.space/tx/${t}` },
+  hyperliquid: { addr: a => `https://app.hyperliquid.xyz/explorer/address/${a}`, tx: t => `https://app.hyperliquid.xyz/explorer/tx/${t}` },
+  ethereum: { addr: a => `https://etherscan.io/address/${a}`, tx: t => `https://etherscan.io/tx/${t}` },
+  arbitrum: { addr: a => `https://arbiscan.io/address/${a}`, tx: t => `https://arbiscan.io/tx/${t}` },
+  base: { addr: a => `https://basescan.org/address/${a}`, tx: t => `https://basescan.org/tx/${t}` },
+  optimism: { addr: a => `https://optimistic.etherscan.io/address/${a}`, tx: t => `https://optimistic.etherscan.io/tx/${t}` },
+  polygon: { addr: a => `https://polygonscan.com/address/${a}`, tx: t => `https://polygonscan.com/tx/${t}` },
+  tron: { addr: a => `https://tronscan.org/#/address/${a}`, tx: t => `https://tronscan.org/#/transaction/${t}` },
+  hyperevm: { addr: a => `https://hyperevmscan.io/address/${a}`, tx: t => `https://hyperevmscan.io/tx/${t}` },
+};
+const PROTO = /HyperUnit|deBridge|LayerZero|USDT0/;
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const short = a => !a ? "" : a.length > 16 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a;
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const chainName = c => CHAIN_NAME[c] || c;
+function fmt(n) {
+  if (!n) return "";
+  const a = Math.abs(n);
+  if (a >= 1e8) return (n / 1e8).toFixed(a >= 1e9 ? 1 : 2).replace(/\.0+$/, "") + "억";
+  if (a >= 1e4) return (n / 1e4).toFixed(a >= 1e6 ? 0 : 1).replace(/\.0$/, "") + "만";
+  if (a >= 100) return Math.round(n).toLocaleString("en-US");
+  return (+n.toPrecision(4)).toLocaleString("en-US", { maximumFractionDigits: 4 });
+}
+const amt = e => e.amounts ? e.amounts.join(" + ") : e.amount ? `${fmt(e.amount)} ${e.asset || ""}`.trim() : "";
+const leadKind = s => (s || "").replace(/\s*\(.*$/, "");
+
+let cy, cur, view, mode = "sum", showLeads = true;
+
+/* ── 보기 모델: 전체 주소(raw) 또는 요약(그룹) ───────────────────────── */
+function rawView(c) {
+  const nodes = c.nodes.filter(n => showLeads || n.role !== "lead");
+  const ids = new Set(nodes.map(n => n.id));
+  const edges = c.edges.map((e, i) => ({ ...e, id: `e${i}` })).filter(e => ids.has(e.source) && ids.has(e.target));
+  return { kind: "raw", nodes, edges, byId: Object.fromEntries(nodes.map(n => [n.id, n])) };
+}
+
+// 요약: 체인마다 한 열, 그 안에서 hop별로 한 상자. 추적을 멈춘 곳은 마지막 열에 종류별로
+function groupKey(n) {
+  if (n.role === "start") return { k: `start|${n.id}`, col: "start", row: 0 };
+  if (n.role === "lead") return { k: `lead|${n.chain}|${leadKind(n.label)}`, col: "lead", row: 0 };
+  if (n.leadKinds && n.leadKinds.length) return { k: `stop|${n.id}`, col: "lead", row: -1 };
+  return { k: `${n.chain}|${n.hop}`, col: n.chain, row: n.hop };
+}
+
+function sumView(c) {
+  const raw = rawView(c);
+  const groups = {}, of = {};
+  raw.nodes.forEach(n => {
+    const { k, col, row } = groupKey(n);
+    const g = groups[k] ||= { id: "g:" + k, members: [], chain: n.chain, hop: n.hop, col: [n.col[0], n.hop], sumCol: col, row, role: n.role,
+      stop: col === "lead" && n.role !== "lead", label: n.role === "lead" ? leadKind(n.label) : n.label };
+    g.members.push(n); of[n.id] = g.id;
+  });
+  Object.values(groups).forEach(g => {
+    const cnt = {};
+    g.members.forEach(m => { cnt[m.level] = (cnt[m.level] || 0) + 1; });
+    g.levels = cnt;
+    g.level = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a] || (RANK[a] ?? 4) - (RANK[b] ?? 4))[0];
+  });
+  const edges = {};
+  raw.edges.forEach(e => {
+    const s = of[e.source], t = of[e.target];
+    if (s === t) return;
+    const k = `${s}|${t}|${e.kind}`;
+    const g = edges[k] ||= { id: "ge" + Object.keys(edges).length, source: s, target: t, kind: e.kind, count: 0, byAsset: {}, txs: [], parts: [] };
+    g.count += e.count; g.parts.push(e);
+    if (e.amount) g.byAsset[e.asset || ""] = (g.byAsset[e.asset || ""] || 0) + e.amount;
+    e.txs.forEach(t => { if (g.txs.length < 30 && !g.txs.includes(t)) g.txs.push(t); });
+  });
+  Object.values(edges).forEach(g => {
+    const assets = Object.entries(g.byAsset).sort((a, b) => b[1] - a[1]);
+    g.amounts = assets.map(([a, v]) => `${fmt(v)} ${a}`.trim());
+    if (assets.length === 1) { g.asset = assets[0][0]; g.amount = assets[0][1]; }
+  });
+  const nodes = Object.values(groups).map(g => {
+    const one = g.members.length === 1 ? g.members[0] : null;
+    return { ...g, address: one ? one.address : "", count: g.members.length, one, basis: one ? one.basis : [], path: one ? one.path : "", leadKinds: one ? one.leadKinds : null, notes: one ? one.notes : null };
+  });
+  return { kind: "sum", nodes, edges: Object.values(edges), byId: Object.fromEntries(nodes.map(n => [n.id, n])), of, raw };
+}
+
+/* ── 배치: 열 = (체인, hop). 열 안에서는 앞 열 부모 위치의 평균 순 ─────── */
+function placeSum(v) {
+  const vertical = $("#cy").clientWidth < 640;
+  const X = vertical ? 180 : 290, Y = vertical ? 262 : 128;
+  const chainCols = [...new Set(v.nodes.filter(n => !["start", "lead"].includes(n.sumCol)).map(n => n.sumCol))]
+    .sort((a, b) => Object.keys(CHAIN_NAME).indexOf(a) - Object.keys(CHAIN_NAME).indexOf(b));
+  const keys = ["start", ...chainCols, "lead"].filter(k => v.nodes.some(n => n.sumCol === k));
+  const pos = {};
+  keys.forEach((k, ci) => {
+    const col = v.nodes.filter(n => n.sumCol === k).sort((a, b) => a.row - b.row || b.count - a.count);
+    col.forEach((n, i) => {
+      const a = ci * X, b = (i - (col.length - 1) / 2) * Y;
+      pos[n.id] = vertical ? { x: b, y: a } : { x: a, y: b };
+    });
+  });
+  const startChain = (v.nodes.find(n => n.sumCol === "start") || {}).chain;
+  const label = k => k === "start" ? `시작 · ${chainName(startChain)}` : k === "lead" ? "멈춘 곳" : chainName(k);
+  let bands;
+  if (vertical) {
+    const xs = Object.values(pos).map(p => p.x), x0 = Math.min(...xs) - 140, x1 = Math.max(...xs) + 140;
+    bands = keys.map((k, ci) => ({ label: label(k), rect: { cx: (x0 + x1) / 2, cy: ci * X - 16, w: x1 - x0, h: X - 12 } }));
+  } else {
+    const ys = Object.values(pos).map(p => p.y), top = Math.min(...ys) - 96, bottom = Math.max(...ys) + 60;
+    bands = keys.map((k, ci) => ({ label: label(k), rect: { cx: ci * X, cy: (top + bottom) / 2, w: X - 16, h: bottom - top } }));
+  }
+  return { pos, cols: [], bands, X, sum: true, vertical };
+}
+
+function place(v) {
+  if (v.kind === "sum") return placeSum(v);
+  const sum = false;
+  const X = sum ? 300 : 250, Y = sum ? 112 : 54;
+  const keys = [...new Set(v.nodes.map(n => n.col.join(".")))].sort((a, b) => {
+    const [a1, a2] = a.split(".").map(Number), [b1, b2] = b.split(".").map(Number);
+    return a1 - b1 || a2 - b2;
+  });
+  const colOf = n => keys.indexOf(n.col.join("."));
+  const parents = {};
+  v.edges.forEach(e => (parents[e.target] ||= []).push(e.source));
+  const pos = {};
+  keys.forEach((k, ci) => {
+    const col = v.nodes.filter(n => colOf(n) === ci);
+    const score = n => {
+      const ps = (parents[n.id] || []).filter(p => pos[p]);
+      return ps.length ? ps.reduce((s, p) => s + pos[p].y, 0) / ps.length : 1e9;
+    };
+    col.sort((a, b) => score(a) - score(b) || (RANK[b.level] ?? 4) - (RANK[a.level] ?? 4) || (a.address || "").localeCompare(b.address || ""));
+    col.forEach((n, i) => { pos[n.id] = { x: ci * X, y: (i - (col.length - 1) / 2) * Y }; });
+  });
+  // 체인 띠: 같은 체인의 연속된 열을 하나로
+  const ys = Object.values(pos).map(p => p.y);
+  const top = Math.min(...ys) - (sum ? 92 : 70), bottom = Math.max(...ys) + (sum ? 56 : 40);
+  const cols = keys.map((k, ci) => {
+    const ns = v.nodes.filter(n => colOf(n) === ci);
+    return { ci, chain: ns[0].chain, hop: ns[0].hop, start: ns.every(n => n.role === "start") };
+  });
+  const bands = [];
+  cols.forEach(c => {
+    const label = c.start ? "시작" : chainName(c.chain);
+    const last = bands[bands.length - 1];
+    if (last && last.label === label && !c.start) last.to = c.ci; else bands.push({ label, from: c.ci, to: c.ci, chain: c.chain });
+  });
+  return { pos, cols, bands, X, top, bottom, sum };
+}
+
+function elements(v) {
+  const L = place(v);
+  const els = [];
+  L.bands.forEach((b, i) => {
+    const r = b.rect || (() => {
+      const x0 = b.from * L.X - L.X / 2 + 8, x1 = b.to * L.X + L.X / 2 - 8;
+      return { cx: (x0 + x1) / 2, cy: (L.top + L.bottom) / 2, w: x1 - x0, h: L.bottom - L.top };
+    })();
+    els.push({ group: "nodes", data: { id: `band${i}`, label: b.label }, position: { x: r.cx, y: r.cy },
+      classes: `band ${i % 2 ? "odd" : "even"}${L.vertical ? " vband" : ""}`, selectable: false, grabbable: false, style: { width: r.w, height: r.h } });
+  });
+  L.cols.forEach(c => {
+    if (c.start) return;
+    els.push({ group: "nodes", data: { id: `hop${c.ci}`, label: `hop ${c.hop}` }, position: { x: c.ci * L.X, y: L.top + (L.sum ? 52 : 40) }, classes: "hoplbl", selectable: false, grabbable: false });
+  });
+  v.nodes.forEach(n => {
+    const lv = n.role === "start" ? "s" : (LV[n.level] || "i");
+    els.push({ group: "nodes", data: { id: n.id, label: nodeLabel(n, v) }, position: L.pos[n.id],
+      classes: `${v.kind} lv-${lv} ${n.role}${n.leadKinds && n.leadKinds.length ? " stop" : ""}` });
+  });
+  v.edges.forEach(e => {
+    els.push({ group: "edges", data: { id: e.id, source: e.source, target: e.target, label: edgeLabel(e, v) },
+      classes: `${v.kind} ${PROTO.test(e.kind) ? "proto" : ""} ${e.kind === "리드" ? "toLead" : ""} ${v.kind === "sum" && !PROTO.test(e.kind) && e.kind !== "거래소 입금" ? "quiet" : ""}` });
+  });
+  return els;
+}
+
+function nodeLabel(n, v) {
+  const unit = n.chain === "hyperliquid" ? "계정" : "주소";
+  if (v.kind === "sum") {
+    if (n.role === "start") return `${n.members[0].label || "시작"}\n${short(n.address)}`;
+    if (n.role === "lead") return `${n.label.slice(0, 20)}\n${n.count > 1 ? `${chainName(n.chain)} ${unit} ${n.count}개` : short(n.address)}`;
+    if (n.stop) return `${leadKind(n.leadKinds[0]).replace(/^서비스 지갑 도달/, "서비스 지갑").slice(0, 20)}\n${short(n.address)}`;
+    const head = `${n.count > 1 ? `${unit} ${n.count}개` : short(n.address)} · hop ${n.hop}`;
+    const lv = ["확정", "계정 단위 확정", "추정"].filter(k => n.levels[k]).map(k => `${k === "계정 단위 확정" ? "계정단위" : k} ${n.levels[k]}`).join(" · ");
+    return `${head}\n${n.count > 1 ? lv : n.level}`;
+  }
+  if (n.role === "start") return `${short(n.address)}\n시작`;
+  if (n.role === "lead") return `${short(n.address)}\n${leadKind(n.label).slice(0, 22)}`;
+  return `${short(n.address)}\n${n.label ? n.label.split(" · ")[0].slice(0, 22) : n.level}`;
+}
+
+function edgeLabel(e, v) {
+  const a = e.amounts ? e.amounts.slice(0, 2).join(" + ") + (e.amounts.length > 2 ? " 외" : "") : e.amount ? amt(e) : "";
+  const nums = [e.count > 1 ? `${e.count}건` : "", a].filter(Boolean).join(" · ");
+  return v.kind === "sum" && nums ? `${e.kind}
+${nums}` : [e.kind, nums].filter(Boolean).join(" · ");
+}
+
+/* ── 스타일 ───────────────────────────────────────────────────────── */
+function style() {
+  const lv = k => css(LV_VAR[k]);
+  const mono = "IBM Plex Mono, ui-monospace, monospace", sans = "IBM Plex Sans KR, system-ui, sans-serif";
+  return [
+    { selector: "node", style: {
+      shape: "round-rectangle", "background-color": css("--paper"), "border-width": 1.5, "border-color": css("--line"),
+      label: "data(label)", "text-wrap": "wrap", "text-valign": "center", "text-halign": "center", "font-family": mono,
+      color: css("--ink"), "z-index": 3, "z-index-compare": "manual",
+    } },
+    { selector: "node.raw", style: { width: 172, height: 42, "font-size": 11, "text-max-width": 164, "line-height": 1.35, "min-zoomed-font-size": 6 } },
+    { selector: "node.sum", style: { width: 236, height: 68, "font-size": 15, "text-max-width": 226, "line-height": 1.45, "font-family": sans } },
+    ...["c", "a", "i"].map(k => ({ selector: `.lv-${k}`, style: { "border-color": lv(k), "border-width": k === "i" ? 1.8 : 2.2, "border-style": k === "i" ? "dashed" : "solid", "background-color": lv(k), "background-opacity": .12 } })),
+    { selector: ".lv-l", style: { "border-color": lv("l"), "border-style": "dashed", "border-width": 1.8, shape: "tag", color: css("--ink-2"), "background-color": css("--bg") } },
+    { selector: ".lv-s", style: { "border-color": css("--ink"), "border-width": 2.5, "background-color": css("--paper"), "font-weight": 500 } },
+    { selector: ".stop", style: { "border-width": 3.5 } },
+    { selector: ".band", style: { shape: "round-rectangle", "background-color": css("--band"), "background-opacity": 1, "border-width": 0,
+      label: "data(label)", "text-valign": "top", "text-halign": "center", "text-margin-y": 26, "font-family": sans, "font-size": 15, "font-weight": 700,
+      color: css("--ink-2"), events: "no", "z-index": 0 } },
+    { selector: ".band.odd", style: { "background-opacity": 0 } },
+    { selector: ".band.vband", style: { "text-halign": "center", "text-valign": "top", "text-margin-y": 22, "font-size": 14 } },
+    { selector: ".hoplbl", style: { shape: "rectangle", width: 60, height: 16, "background-opacity": 0, "border-width": 0, "font-family": mono, "font-size": 11, color: css("--muted"), events: "no", "z-index": 1 } },
+    { selector: "edge", style: {
+      width: 1.4, "line-color": css("--edge"), "target-arrow-color": css("--edge"), "target-arrow-shape": "triangle", "arrow-scale": .9,
+      "curve-style": "bezier", "control-point-step-size": 26, "z-index": 2, "z-index-compare": "manual",
+      "font-size": 11, "font-family": mono, color: css("--ink-2"), "text-background-color": css("--paper"), "text-background-opacity": .92, "text-background-padding": 3, "text-background-shape": "round-rectangle",
+    } },
+    { selector: "edge.sum", style: { label: "data(label)", "font-family": sans, "font-size": 13, "text-rotation": "none", "text-wrap": "wrap", "text-max-width": 150 } },
+    { selector: "edge.sum", style: { width: 2.2 } },
+    { selector: "edge.sum.quiet", style: { label: "" } },
+    { selector: "edge.sum.proto", style: { label: "", "source-label": "data(label)", "source-text-offset": 86, "text-wrap": "wrap" } },
+    { selector: "edge.sum.proto.up, edge.sum.proto:selected", style: { "source-label": "", label: "data(label)" } },
+    { selector: "edge.sum.quiet.up, edge.sum.quiet:selected", style: { label: "data(label)" } },
+    { selector: "edge.proto", style: { "line-color": css("--accent"), "target-arrow-color": css("--accent"), width: 2.4 } },
+    { selector: "edge.raw.proto", style: { width: 1.8, opacity: .7 } },
+    { selector: "edge.toLead", style: { "line-style": "dashed" } },
+    { selector: ".dim", style: { opacity: .12 } },
+    { selector: "edge.up", style: { width: 2.6, "line-color": css("--ink"), "target-arrow-color": css("--ink"), opacity: 1, label: "data(label)", "z-index": 9 } },
+    { selector: "edge.down", style: { width: 1.8, opacity: .9 } },
+    { selector: "node:selected", style: { "border-width": 3.5, "border-color": css("--ink"), "border-style": "solid" } },
+    { selector: "edge:selected", style: { width: 3.2, "line-color": css("--ink"), "target-arrow-color": css("--ink"), opacity: 1, label: "data(label)", "z-index": 10 } },
+  ];
+}
+
+/* ── 그리기 ───────────────────────────────────────────────────────── */
+function render(focusId) {
+  view = mode === "sum" ? sumView(cur) : rawView(cur);
+  if (cy) cy.destroy();
+  cy = cytoscape({ container: $("#cy"), elements: elements(view), style: style(), layout: { name: "preset" },
+    minZoom: .1, maxZoom: 2.5, wheelSensitivity: .25, boxSelectionEnabled: false, autoungrabify: true });
+  fitView();
+  cy.on("tap", "node", ev => { const id = ev.target.id(); if (view.byId[id]) selectNode(id); });
+  cy.on("tap", "edge", ev => selectEdge(ev.target.id()));
+  cy.on("tap", ev => { if (ev.target === cy) clearSel(); });
+  $("#hint").textContent = mode === "sum"
+    ? "체인마다 한 열, 같은 단계(hop)의 주소를 한 상자로 묶음 · 상자를 누르면 구성 주소와 근거"
+    : "노드를 누르면 시작점까지의 경로가 진하게 표시됨 · 스크롤로 확대, 드래그로 이동";
+  if (focusId && view.byId[focusId]) selectNode(focusId, true); else clearSel();
+}
+
+function fitView() {
+  cy.fit(cy.elements(), 24);
+  if (mode === "sum" && cy.zoom() > 1) { cy.zoom(1); cy.center(); }
+  if (mode === "raw" && cy.zoom() < .62) {
+    // 전체 주소 모드는 글자가 읽히는 배율을 유지하고 시작점 쪽부터 보여줌
+    cy.zoom(.62);
+    const bb = cy.elements().boundingBox();
+    cy.pan({ x: 24 - bb.x1 * .62, y: cy.height() / 2 - ((bb.y1 + bb.y2) / 2) * .62 });
+  }
+}
+
+function highlight(id) {
+  const n = cy.getElementById(id);
+  const up = n.predecessors(), down = n.successors();
+  cy.elements().not(".band, .hoplbl").addClass("dim").removeClass("up down");
+  n.removeClass("dim");
+  up.removeClass("dim"); up.edges().addClass("up");
+  down.removeClass("dim"); down.edges().addClass("down");
+}
+
+function pathTo(id) {
+  const incoming = {};
+  view.edges.forEach(e => (incoming[e.target] ||= []).push(e));
+  const path = [view.byId[id]], seen = new Set([id]);
+  let at = id;
+  while (incoming[at]) {
+    const opts = incoming[at].filter(e => !seen.has(e.source));
+    if (!opts.length) break;
+    opts.sort((a, b) => (RANK[view.byId[b.source].level] ?? 4) - (RANK[view.byId[a.source].level] ?? 4));
+    at = opts[0].source; seen.add(at); path.unshift({ ...view.byId[at], via: opts[0] });
+  }
+  return path;
+}
+
+/* ── 패널 ─────────────────────────────────────────────────────────── */
+function lvBadge(n) {
+  if (n.role === "start") return `<span class="badge s">시작점</span>`;
+  return `<span class="badge ${LV[n.level] || "i"}">${esc(n.level || "판정 없음")}</span>`;
+}
+const nodeName = n => n.count > 1 ? `${n.chain === "hyperliquid" ? "계정" : "주소"} ${n.count}개` : short(n.address);
+function edgeTxChain(e) {
+  const s = (view.raw || view).byId[e.source] || view.byId[e.source], t = (view.raw || view).byId[e.target] || view.byId[e.target];
+  if (e.kind === "HyperUnit 입금") return "bitcoin";
+  if (e.kind === "HyperUnit 출금") return t.chain;
+  return s.chain;
+}
+function txLink(chain, tx) {
+  const ex = EXPLORER[chain];
+  if (!tx || !ex) return esc(short(tx));
+  return `<a href="${esc(ex.tx(tx))}" target="_blank" rel="noopener">${esc(short(tx))}</a>`;
+}
+function flowRows(list, dir) {
+  if (!list.length) return `<tr><td colspan="3" class="meta">없음</td></tr>`;
+  return list.slice(0, 40).map(e => {
+    const other = view.byId[dir === "in" ? e.source : e.target];
+    const chain = edgeTxChain(e.parts ? e.parts[0] : e);
+    const txs = e.txs.slice(0, 2).map(t => txLink(chain, t)).join(" ") + (e.txs.length > 2 ? ` <span class="meta">외 ${e.txs.length - 2}</span>` : "");
+    return `<tr><td><button class="link" data-go="${esc(other.id)}">${esc(nodeName(other))}</button><br><span class="meta">${esc(e.kind)}${e.count > 1 ? ` ${e.count}건` : ""}</span></td>
+      <td class="n">${esc(amt(e))}</td><td>${txs}</td></tr>`;
+  }).join("");
+}
+function pathHtml(id, n) {
+  const path = pathTo(id);
+  if (path.length < 2) return "";
+  const weakest = path.filter(p => p.role !== "start" && p.role !== "lead").reduce((m, p) => Math.min(m, RANK[p.level] ?? 3), 3);
+  const wname = Object.keys(RANK).find(k => RANK[k] === weakest);
+  return `<h3>시작점부터의 경로 · ${path.length - 1}구간${n.role !== "start" ? ` · 가장 약한 구간 ${esc(wname)}` : ""}</h3>
+    <ol class="path">${path.map(p => `<li><span class="dot ${p.role === "start" ? "s" : LV[p.level] || "i"}"></span>
+      <span>${p.via ? `<span class="meta">${esc(p.via.kind)}${p.via.amount ? " · " + esc(amt(p.via)) : ""}</span><br>` : ""}<button class="link" data-go="${esc(p.id)}">${esc(nodeName(p))}</button> <span class="meta">${esc(chainName(p.chain))} · ${p.role === "start" ? "시작" : esc(p.level)}</span></span></li>`).join("")}</ol>`;
+}
+
+function selectNode(id, center) {
+  const n = view.byId[id];
+  if (!n) return;
+  highlight(id);
+  cy.$(":selected").unselect(); cy.getElementById(id).select();
+  if (center) cy.animate({ center: { eles: cy.getElementById(id) }, zoom: Math.max(cy.zoom(), mode === "raw" ? .9 : cy.zoom()) }, { duration: 300 });
+  const ins = view.edges.filter(e => e.target === id), outs = view.edges.filter(e => e.source === id);
+  const one = view.kind === "raw" ? n : n.one;
+  const ex = EXPLORER[n.chain];
+  const where = `${chainName(n.chain)} · ${n.role === "lead" || n.stop ? "멈춘 곳" : n.role === "start" ? "시작" : "hop " + n.hop}`;
+  let head;
+  if (one) {
+    head = `<h2>${esc(where)}</h2><div class="addr">${esc(one.address)}</div>
+      <div class="row">${lvBadge(one)}${one.path && one.role !== "start" && one.path !== one.level ? `<span class="badge ${LV[one.path] || "i"}">경로 ${esc(one.path)}</span>` : ""}
+        <button class="copy" type="button" data-copy="${esc(one.address)}">주소 복사</button>
+        ${ex ? `<a class="linkbtn" href="${esc(one.address.length === 64 && one.chain === "bitcoin" ? ex.tx(one.address) : ex.addr(one.address))}" target="_blank" rel="noopener">탐색기</a>` : ""}
+        ${view.kind === "sum" ? `<button class="primary" type="button" data-raw="${esc(one.id)}">전체 주소에서 보기</button>` : ""}</div>
+      ${one.label && one.role !== "start" ? `<h3>${one.role === "lead" ? "멈춘 이유" : "태그"}</h3><p style="margin:0;font-size:14px">${esc(one.label)}</p>` : ""}
+      ${one.leadKinds && one.leadKinds.length ? `<h3>${one.role === "lead" ? "같은 주소의 다른 리드" : "여기서 추적 중단"}</h3><ul class="basis">${one.leadKinds.map(k => `<li>${esc(k)}</li>`).join("")}</ul>` : ""}
+      ${one.basis && one.basis.length && one.role !== "lead" ? `<h3>판정 근거</h3><ul class="basis">${one.basis.map(b => `<li>${esc(b)}</li>`).join("")}</ul>` : ""}
+      ${one.notes ? `<h3>이 주소에서 일어난 전환</h3><ul class="basis">${one.notes.map(b => `<li>${esc(b)}</li>`).join("")}</ul>` : ""}`;
+  } else {
+    const unit = n.chain === "hyperliquid" ? "계정" : "주소";
+    head = `<h2>${esc(where)}</h2><p class="big">${esc(n.role === "lead" ? n.label : `${unit} ${n.count}개`)}</p>
+      <div class="row">${n.role === "lead" ? `<span class="badge l">리드</span><span class="meta">${esc(chainName(n.chain))} ${unit} ${n.count}개</span>`
+        : ["확정", "계정 단위 확정", "추정"].filter(k => n.levels[k]).map(k => `<span class="badge ${LV[k]}">${k} ${n.levels[k]}</span>`).join("")}</div>
+      <h3>구성 ${unit} (${n.count})</h3>
+      <div class="members">${n.members.slice(0, 60).map(m => `<span class="dot ${LV[m.path] || LV[m.level] || "i"}" title="경로 ${esc(m.path)}"></span>
+        <button class="link" data-raw="${esc(m.id)}">${esc(short(m.address))}</button><span class="meta">${esc(m.path && m.path !== m.level ? "경로 " + m.path : "")}</span>`).join("")}</div>
+      ${n.members.length > 60 ? `<p class="meta">외 ${n.members.length - 60}개</p>` : ""}
+      <p class="meta" style="margin-top:8px">주소를 누르면 전체 주소 보기로 이동</p>`;
+  }
+  $("#panel").innerHTML = `${head}${pathHtml(id, n)}
+    <h3>들어온 자금 (${ins.length})</h3><table class="flows">${flowRows(ins, "in")}</table>
+    <h3>나간 자금 (${outs.length})</h3><table class="flows">${flowRows(outs, "out")}</table>`;
+}
+
+function selectEdge(eid) {
+  const e = view.edges.find(x => x.id === eid);
+  if (!e) return;
+  const s = view.byId[e.source], t = view.byId[e.target];
+  cy.elements().not(".band, .hoplbl").addClass("dim").removeClass("up down");
+  cy.getElementById(eid).removeClass("dim").connectedNodes().removeClass("dim");
+  const chain = edgeTxChain(e.parts ? e.parts[0] : e);
+  const dst = e.parts ? e.parts.map(p => p.dst_tx).filter(Boolean) : (e.dst_tx ? [e.dst_tx] : []);
+  $("#panel").innerHTML = `
+    <h2>${esc(chainName(s.chain))} → ${esc(chainName(t.chain))}</h2>
+    <p class="big">${esc(e.kind)}</p>
+    <div class="row"><button class="link" data-go="${esc(s.id)}">${esc(nodeName(s))}</button> → <button class="link" data-go="${esc(t.id)}">${esc(nodeName(t))}</button></div>
+    <h3>금액</h3><p class="mono" style="margin:0">${e.amounts ? (e.amounts.map(esc).join("<br>") || "기록 없음") : e.amount ? e.amount.toLocaleString("en-US", { maximumFractionDigits: 6 }) + " " + esc(e.asset || "") : "기록 없음"}${e.count > 1 ? ` <span class="meta">(${e.count}건 합계)</span>` : ""}</p>
+    ${e.via ? `<h3>거친 컨트랙트</h3><p style="margin:0;font-size:14px">${esc(e.via)}</p>` : ""}
+    ${e.status ? `<h3>브리지 상태</h3><p class="mono" style="margin:0">${esc(e.status)}</p>` : ""}
+    <h3>거래 (${e.txs.length}${e.txs.length >= 30 ? "+" : ""})</h3><ul class="basis mono" style="font-size:12.5px">${e.txs.map(x => `<li>${txLink(chain, x)}</li>`).join("") || "<li>기록 없음</li>"}</ul>
+    ${dst.length ? `<h3>도착 체인 거래</h3><ul class="basis mono" style="font-size:12.5px">${dst.slice(0, 20).map(x => `<li>${txLink(t.chain, x)}</li>`).join("")}</ul>` : ""}`;
+}
+
+function clearSel() {
+  if (cy) { cy.elements().removeClass("dim up down"); cy.$(":selected").unselect(); }
+  const s = cur.stats;
+  $("#panel").innerHTML = `
+    <div class="empty"><h2>읽는 법</h2>
+    <p>왼쪽에서 오른쪽으로 자금이 이동한 순서. 회색 띠 하나가 체인 하나. 요약에서는 같은 단계(hop)의 주소를 한 상자로 묶고, 전체 주소에서는 주소마다 상자 하나.</p>
+    <p>상자나 선을 누르면 시작점까지의 경로, 판정 근거, 거래 링크가 여기 나옴.</p></div>
+    <h3>연결 확실도</h3>
+    <div class="legend">
+      <div><span class="dot c"></span><span><b>확정</b> · 자금원이 추적 자금 1건뿐 (외부 유입 1% 미만)</span></div>
+      <div><span class="dot a"></span><span><b>계정 단위 확정</b> · 추적 자금 여러 건이 한 계정에 합쳐짐</span></div>
+      <div><span class="dot i"></span><span><b>추정</b> · 다른 자금이 1% 이상 섞임 (점선)</span></div>
+      <div><span class="dot l"></span><span><b>리드</b> · 거래소, 서비스 지갑, 상한 도달로 추적을 멈춘 곳</span></div>
+    </div>
+    <h3>보라색 선</h3><p style="margin:0;font-size:13.5px;color:var(--ink-2)">HyperUnit, deBridge, LayerZero 기록으로 체인 사이를 이은 구간</p>
+    <h3>이 사례</h3>
+    <p style="margin:0;font-size:13.5px;color:var(--ink-2)">시작 <span class="mono">${esc(short(cur.start))}</span> · 주소 ${s.nodes} · 이동 ${s.edges} · 리드 ${s.leads}</p>`;
+}
+
+function showCase(id) {
+  cur = DATA.find(c => c.id === id) || DATA[0];
+  document.querySelectorAll(".tab").forEach(t => t.setAttribute("aria-selected", t.dataset.id === cur.id));
+  const s = cur.stats;
+  $("#summary").innerHTML = `
+    <div class="what"><b>${esc(cur.title)} · ${esc(cur.name)}</b><p>${esc(cur.summary)}</p></div>
+    <div class="chips">
+      <span class="chip">${s.chains.map(chainName).join(" → ")}</span>
+      <span class="chip"><span class="dot c"></span>확정 ${s.levels["확정"]}</span>
+      <span class="chip"><span class="dot a"></span>계정 단위 ${s.levels["계정 단위 확정"]}</span>
+      <span class="chip"><span class="dot i"></span>추정 ${s.levels["추정"]}</span>
+      <span class="chip"><span class="dot l"></span>리드 ${s.leads}</span>
+      <span class="chip">도착: ${esc(cur.end)}</span>
+    </div>`;
+  render();
+  try { history.replaceState(null, "", "#" + cur.id); } catch (e) {}
+}
+
+function setMode(m, focusId) {
+  mode = m;
+  $("#m-sum").setAttribute("aria-pressed", m === "sum");
+  $("#m-all").setAttribute("aria-pressed", m === "raw");
+  render(focusId);
+}
+
+$("#tabs").innerHTML = DATA.map(c => `<button class="tab" role="tab" data-id="${c.id}" type="button">${esc(c.title)}</button>`).join("");
+$("#tabs").addEventListener("click", e => { const t = e.target.closest(".tab"); if (t) showCase(t.dataset.id); });
+$("#m-sum").addEventListener("click", () => setMode("sum"));
+$("#m-all").addEventListener("click", () => setMode("raw"));
+$("#fit").addEventListener("click", () => cy.animate({ fit: { eles: cy.elements(), padding: 24 } }, { duration: 250 }));
+$("#leads").addEventListener("click", e => { showLeads = !showLeads; e.currentTarget.setAttribute("aria-pressed", showLeads); render(); });
+$("#q").addEventListener("keydown", e => {
+  if (e.key !== "Enter") return;
+  const q = e.target.value.trim().toLowerCase();
+  const hit = q && cur.nodes.find(n => n.address.toLowerCase().includes(q));
+  if (hit) setMode("raw", hit.id);
+});
+$("#panel").addEventListener("click", e => {
+  const raw = e.target.closest("[data-raw]");
+  if (raw) { setMode("raw", raw.dataset.raw); return; }
+  const go = e.target.closest("[data-go]");
+  if (go) { if (view.byId[go.dataset.go]) selectNode(go.dataset.go, true); return; }
+  const cp = e.target.closest("[data-copy]");
+  if (cp) {
+    const done = () => { cp.textContent = "복사됨"; setTimeout(() => (cp.textContent = "주소 복사"), 1200); };
+    navigator.clipboard?.writeText(cp.dataset.copy).then(done, () => {
+      const r = document.createRange(); r.selectNodeContents(document.querySelector("#panel .addr"));
+      const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+    });
+  }
+});
+const restyle = () => cy && cy.style(style());
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", restyle);
+new MutationObserver(restyle).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+document.fonts?.ready.then(restyle);
+addEventListener("resize", () => { if (cy) { cy.resize(); } });
+
+showCase((location.hash || "").slice(1));
+</script>

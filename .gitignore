@@ -25,3 +25,7 @@ Thumbs.db
 
 # 파이프라인 실행 결과
 /out/
+
+# 발표 덱 (deck/build.sh로 재생성)
+deck/node_modules/
+deck/out/

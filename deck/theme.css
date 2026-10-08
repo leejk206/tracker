@@ -1,0 +1,133 @@
+/* @theme tracker */
+/* tracker 발표 테마 — defi/deck/theme.css(밈토피아) 이식 */
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+:root {
+  --bg: #F5F6F9; --paper: #FFFFFF; --ink: #171A21; --ink-2: #4A5163; --muted: #7A8194; --line: #D9DCE5;
+  --accent: #5B3FD9; --accent-soft: #E9E5FB; --down: #C93E35; --down-soft: #FBE7E5; --up: #1C7F6B; --up-soft: #DDF2ED;
+  --mark: #5B3FD9; --mark-2: #B7ABF2;
+}
+section {
+  width: 1280px; height: 720px;
+  padding: 67px 77px 59px;
+  background: var(--paper); color: var(--ink);
+  font-family: "IBM Plex Sans KR", "Noto Sans KR", "Apple SD Gothic Neo", system-ui, sans-serif;
+  font-size: 21px; line-height: 1.45;
+  display: flex; flex-direction: column; justify-content: flex-start; align-items: stretch;
+  box-sizing: border-box; position: relative; overflow: hidden;
+}
+section * { box-sizing: border-box; }
+section > *:first-child { margin-top: 0; }
+
+/* eyebrow = header, 페이지 번호 = pagination */
+header {
+  position: absolute; top: 67px; left: 77px; right: 77px;
+  font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 15px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent);
+  margin: 0;
+}
+section::after, section[data-marpit-pagination]::after {
+  position: absolute; top: 67px; right: 77px; bottom: auto; left: auto; padding: 0; margin: 0;
+  content: attr(data-marpit-pagination) ' / ' attr(data-marpit-pagination-total);
+  font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 15px; letter-spacing: .12em; color: var(--muted);
+}
+section:not(.title) { padding-top: 104px; }
+footer {
+  position: absolute; left: 77px; right: 77px; bottom: 59px;
+  font-size: 15px; color: var(--muted); display: flex; justify-content: space-between; gap: 26px; margin: 0;
+}
+footer > * { margin: 0; }
+footer .r { margin-left: auto; white-space: nowrap; }
+
+h1 { font-size: 69px; line-height: 1.1; margin: 0; font-weight: 700; letter-spacing: -.01em; text-wrap: balance; }
+h2 { font-size: 42px; line-height: 1.18; margin: 0 0 28px; font-weight: 700; letter-spacing: -.01em; text-wrap: balance; }
+h2 em { font-style: normal; color: var(--accent); }
+h2 .loss { color: var(--down); }
+h3 { font-size: 19px; margin: 0 0 8px; font-weight: 700; line-height: 1.3; }
+p { margin: 0; }
+p + p { margin-top: 10px; }
+ul, ol { margin: 0; padding-left: 1.4em; }
+li { margin: .25em 0; }
+b, strong { font-weight: 700; }
+a { color: inherit; }
+.lead { font-size: 24px; color: var(--ink-2); max-width: 60ch; }
+.cap { font-size: 17px; color: var(--muted); }
+.num, code { font-family: "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; font-size: .95em; background: none; padding: 0; color: inherit; }
+.tag { display: inline-block; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 14px; padding: .15em .55em; border-radius: 3px; background: var(--accent-soft); color: var(--accent); letter-spacing: .04em; }
+.tag.down { background: var(--down-soft); color: var(--down); }
+.tag.up { background: var(--up-soft); color: var(--up); }
+small { font-size: .8em; color: var(--muted); }
+
+/* 레이아웃 컨테이너 (::: grid g3 / ::: box / ::: stat / ::: cols) */
+.grid { display: grid; gap: 26px; flex: 1; min-height: 0; align-content: start; }
+.grid.fit { flex: 0 0 auto; }
+.grid + .grid, .grid + .box, :not(.grid) > .box + .box, .grid + p, .flow + .grid, .cols + .grid, .tier + .grid, .grid + table, table + .grid { margin-top: 20px; }
+.g2 { grid-template-columns: 1fr 1fr; }
+.g3 { grid-template-columns: 1fr 1fr 1fr; }
+.g4 { grid-template-columns: repeat(4, 1fr); }
+.g21 { grid-template-columns: 1.25fr 1fr; }
+.cols { display: grid; grid-template-columns: 1.25fr 1fr; gap: 26px; flex: 1; min-height: 0; align-content: start; }
+.box { border-top: 2px solid var(--line); padding-top: 15px; }
+.box p, .box li { color: var(--ink-2); font-size: 18.5px; }
+.box h3 + p, .box h3 + ul { margin-top: 0; }
+.box p + h3 { margin-top: 20px; }
+.stat > p:first-child { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 64px; line-height: 1; font-weight: 500; letter-spacing: -.02em; color: var(--ink); margin: 0; }
+.stat.acc > p:first-child { color: var(--accent); }
+.stat.loss > p:first-child { color: var(--down); }
+.stat.sm > p:first-child { font-size: 44px; }
+.stat > p + p { font-size: 17px; color: var(--muted); margin-top: 6px; }
+.stack > * + * { margin-top: 20px; }
+blockquote { border-left: 3px solid var(--accent); padding-left: 18px; margin: 0; font-size: 26px; color: var(--ink); max-width: 48ch; text-wrap: balance; }
+blockquote p { margin: 0; }
+blockquote + p { margin-top: 18px; }
+.center { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 30px; }
+
+table { border-collapse: collapse; width: 100%; font-size: 18px; margin: 0; }
+th { font-weight: 500; color: var(--muted); text-align: left; font-size: 15px; letter-spacing: .04em; padding: .4em .6em; border-bottom: 1px solid var(--line); }
+td { padding: .45em .6em; border-bottom: 1px solid var(--line); vertical-align: top; }
+td.dn { color: var(--down); }
+td.up { color: var(--up); }
+tr.hi td { background: var(--accent-soft); }
+table.compact { font-size: 16px; }
+table.nohead thead { display: none; }
+table.compact td, table.compact th { padding: .3em .6em; }
+.box table { font-size: 17px; }
+.box td { color: var(--ink-2); }
+
+/* 흐름도: ::: flow 안에 `A → **B** → C` 한 줄 */
+.flow p { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 17px; }
+.flow .node { border: 1px solid var(--line); border-radius: 4px; padding: .6em .9em; background: var(--bg); white-space: nowrap; }
+.flow .node.k { border-color: var(--accent); background: var(--accent-soft); }
+.flow .arr { color: var(--muted); }
+
+/* 티어표: ::: tier 안의 3열 테이블 */
+.tier table { font-size: 17px; }
+.tier td, .tier th { border: 0; padding: .3em .8em .3em 0; }
+.tier td:first-child { font-family: "IBM Plex Mono", ui-monospace, monospace; color: var(--accent); width: 70px; white-space: nowrap; }
+.tier td:nth-child(2) { color: var(--ink); }
+.tier td:nth-child(3) { color: var(--ink-2); }
+.tier tr.avoid td:first-child { color: var(--down); }
+
+/* 막대: ::: bars 안의 2열 테이블 (라벨 | 값) — 값은 data-max 대비 폭 */
+.bars table { font-size: 17px; }
+.bars td, .bars th { border: 0; padding: .15em .6em .15em 0; }
+.bars td:first-child { color: var(--ink-2); white-space: nowrap; width: 150px; }
+.bars td:nth-child(2) { width: 100%; white-space: nowrap; }
+.bars .bar { max-width: calc(100% - 60px); }
+.bars .bar { display: inline-block; height: 17px; background: var(--mark); border-radius: 0 3px 3px 0; vertical-align: middle; }
+.bars .bar.dim { background: var(--mark-2); }
+.bars .v { font-family: "IBM Plex Mono", ui-monospace, monospace; color: var(--ink-2); margin-left: 10px; }
+
+svg text { font-family: "IBM Plex Mono", ui-monospace, monospace; fill: var(--ink-2); }
+
+/* 타이틀 슬라이드 */
+section.title { justify-content: center; }
+section.title header { color: var(--accent); }
+section.title h1 { margin: 18px 0 30px; }
+
+/* security 덱 보강 */
+.grid + blockquote, .flow + .grid, .flow + .cols { margin-top: 26px; }
+.grid > .box + .box { margin-top: 0; }
+table + ul, table + .box { margin-top: 20px; }
+.flow + table, .grid + ul, .box .flow { margin-top: 18px; }
+.box .flow + .cap { margin-top: 14px; }
+blockquote + ul { margin-top: 26px; }
