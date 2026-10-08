@@ -20,7 +20,7 @@ BTC tx나 주소 하나를 넣으면 Hyperliquid, Ethereum, Tron을 건너가는
 세 사례 모두 체인을 바꾼 지점에서는 추적이 끊기지 않았다. 멈춘 곳은 거래소와 프라이버시 코인이었다.
 입금마다 새 계정을 쓰는 식의 분산은 오히려 계정마다 자금원을 하나로 만들어 1:1 연결을 확정시켰다 (사례 1의 24개 계정 전부 `확정`).
 
-**그래프로 보기**: `python3 viewer/build.py` → `viewer/index.html`을 브라우저로 연다. 노드를 누르면 시작점까지의 경로, 판정 근거, 거래 링크가 나온다 ([viewer/](viewer/README.md)).
+**그래프로 보기**: https://leejk206.github.io/tracker/viewer/ (로컬에서는 `python3 viewer/build.py` → `viewer/index.html`). 노드를 누르면 시작점까지의 경로, 판정 근거, 거래 링크가 나온다 ([viewer/](viewer/README.md)).
 
 ## 체인 사이를 잇는 방법
 

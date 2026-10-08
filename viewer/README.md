@@ -1,4 +1,6 @@
-# viewer — 추적 결과 웹 뷰어
+# viewer: 추적 결과 웹 뷰어
+
+공개 페이지: https://leejk206.github.io/tracker/viewer/
 
 `out/<사례>/pipeline.json`을 단계별 그래프로 보여주는 정적 페이지 (`index.html` 한 파일, 데이터 포함).
 
